@@ -59,9 +59,10 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowedOriginPatterns(List.of(
-            "http://localhost:*",
-            "https://fily16.github.io",
-            "https://aromastudio.vercel.app"
+                "http://localhost:*",
+                "https://fily16.github.io",
+                "https://aroma-studio.vercel.app", // ¡Añadimos el guion aquí!
+                "https://aroma-studio-8bjblrkil-barbers-projects-dad7ecf6.vercel.app" // Tu URL de preview por si acaso
         ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
