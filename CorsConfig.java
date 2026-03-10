@@ -13,11 +13,15 @@ public class CorsConfig {
         return new WebMvcConfigurer() {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
-                registry.addMapping("/**") // Aplica a todos los endpoints de tu API (/api/auth, /api/products, etc.)
-                        .allowedOrigins("https://aroma-studio-8bjblrkil-barbers-projects-dad7ecf6.vercel.app") // La URL exacta de tu frontend
-                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS") // Permite estos métodos (OPTIONS es el preflight request que fallaba)
-                        .allowedHeaders("*") // Permite cualquier cabecera
-                        .allowCredentials(true); // Necesario si manejas cookies o tokens de autenticación
+                registry.addMapping("/**")
+                        // 👇 Aquí agregamos tu nueva URL principal junto con la anterior
+                        .allowedOrigins(
+                                "https://aroma-studio-8bjblrkil-barbers-projects-dad7ecf6.vercel.app",
+                                "https://aroma-studio.vercel.app"
+                        )
+                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                        .allowedHeaders("*")
+                        .allowCredentials(true);
             }
         };
     }
