@@ -14,10 +14,10 @@ public class CorsConfig {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/**")
-                        // 👇 Aquí agregamos tu nueva URL principal junto con la anterior
-                        .allowedOrigins(
-                                "https://aroma-studio-8bjblrkil-barbers-projects-dad7ecf6.vercel.app",
-                                "https://aroma-studio.vercel.app"
+                        // Usamos allowedOriginPatterns para permitir comodines (*)
+                        .allowedOriginPatterns(
+                                "https://*.vercel.app", // Acepta la URL principal y todas las previews de Vercel
+                                "http://localhost:*"
                         )
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowedHeaders("*")

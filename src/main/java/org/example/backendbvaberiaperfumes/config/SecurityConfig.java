@@ -29,28 +29,28 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-            .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-            .csrf(csrf -> csrf.disable())
-            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
-                // Public endpoints
-                .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/products/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/consolidados/active").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/orders").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/orders/code/**").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/config/public").permitAll()
-                .requestMatchers(HttpMethod.GET, "/api/retail/stock").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/retail/form-sale").permitAll()
-                .requestMatchers("/h2-console/**").permitAll()
-                // Admin endpoints
-                .requestMatchers("/api/admin/**").authenticated()
-                .requestMatchers(HttpMethod.PUT, "/api/**").authenticated()
-                .requestMatchers(HttpMethod.DELETE, "/api/**").authenticated()
-                .anyRequest().permitAll()
-            )
-            .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
-            .headers(h -> h.frameOptions(f -> f.sameOrigin())); // For H2 console
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        // Public endpoints
+                        .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/products/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/consolidados/active").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/orders").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/orders/code/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/public").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/retail/stock").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/retail/form-sale").permitAll()
+                        .requestMatchers("/h2-console/**").permitAll()
+                        // Admin endpoints
+                        .requestMatchers("/api/admin/**").authenticated()
+                        .requestMatchers(HttpMethod.PUT, "/api/**").authenticated()
+                        .requestMatchers(HttpMethod.DELETE, "/api/**").authenticated()
+                        .anyRequest().permitAll()
+                )
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                .headers(h -> h.frameOptions(f -> f.sameOrigin())); // For H2 console
 
         return http.build();
     }
@@ -58,12 +58,14 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
+
+        // Aquí agregamos el comodín para Vercel
         config.setAllowedOriginPatterns(List.of(
                 "http://localhost:*",
                 "https://fily16.github.io",
-                "https://aroma-studio.vercel.app", // ¡Añadimos el guion aquí!
-                "https://aroma-studio-8bjblrkil-barbers-projects-dad7ecf6.vercel.app" // Tu URL de preview por si acaso
+                "https://*.vercel.app"
         ));
+
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
