@@ -59,20 +59,53 @@ public class ConsolidadoService {
                 .orElseThrow(() -> new RuntimeException("Consolidado not found: " + id));
     }
 
-    // --- Client Order Creation ---
+    // --- Client Order Creation (Con soporte para acumular pedidos) ---
 
     @Transactional
     public Order createOrder(OrderRequest request) {
-        Consolidado active = consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
-                .orElseThrow(() -> new RuntimeException("No hay consolidado abierto. No se pueden hacer pedidos en este momento."));
+        Order order;
 
-        Order order = new Order();
-        order.setConsolidado(active);
-        order.setClientName(request.getClientName());
-        order.setClientPhone(request.getClientPhone());
-        order.setPaymentStatus("PENDIENTE_SEPARACION");
+        // 1. ¿El cliente quiere agregar a un pedido existente?
+        if (request.getExistingOrderCode() != null && !request.getExistingOrderCode().trim().isEmpty()) {
+            order = orderRepo.findByOrderCode(request.getExistingOrderCode().trim())
+                    .orElseThrow(() -> new IllegalArgumentException("El código de pedido ingresado no existe."));
 
+            if (!order.getClientPhone().equals(request.getClientPhone())) {
+                throw new IllegalArgumentException("Por seguridad, el celular ingresado debe coincidir con el pedido original.");
+            }
+
+            if (!order.getConsolidado().getStatus().equals("ABIERTO")) {
+                throw new IllegalArgumentException("El consolidado de este pedido ya fue cerrado. No se pueden agregar más productos.");
+            }
+
+            // Concatenar el nuevo Yape y retroceder el estado para requerir verificación manual
+            String oldYape = order.getYapeReference() != null ? order.getYapeReference() : "Sin Voucher";
+            String newYape = request.getYapeReference() != null ? request.getYapeReference() : "Sin Voucher";
+            order.setYapeReference(oldYape + " | " + newYape);
+            order.setPaymentStatus("PENDIENTE_SEPARACION");
+
+        } else {
+            // 2. Es un pedido totalmente nuevo
+            Consolidado active = consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
+                    .orElseThrow(() -> new RuntimeException("No hay consolidado abierto. No se pueden hacer pedidos en este momento."));
+
+            order = new Order();
+            order.setConsolidado(active);
+            order.setClientName(request.getClientName());
+            order.setClientPhone(request.getClientPhone());
+            order.setYapeReference(request.getYapeReference());
+            order.setPaymentStatus("PENDIENTE_SEPARACION");
+        }
+
+        // 3. Contar las unidades previas si ya existían para recalcular bien la separación
         int totalUnits = 0;
+        if (order.getItems() != null) {
+            for (OrderItem existingItem : order.getItems()) {
+                totalUnits += existingItem.getQuantity();
+            }
+        }
+
+        // 4. Agregar los nuevos productos al pedido (nuevo o existente)
         for (OrderRequest.OrderItemRequest itemReq : request.getItems()) {
             Product product = productRepo.findById(itemReq.getProductId())
                     .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
@@ -93,7 +126,7 @@ public class ConsolidadoService {
 
         order.recalculateTotal();
 
-        // Calculate deposit: configurable per perfume (default S/20)
+        // 5. Recalcular el depósito de separación (aplicado al TOTAL de unidades)
         double depositPerUnit = pricing.getDepositPerUnit();
         double depositAmount = totalUnits * depositPerUnit;
         order.setDepositAmountPen(depositAmount);
@@ -101,9 +134,15 @@ public class ConsolidadoService {
 
         Order saved = orderRepo.save(order);
 
-        // Generate order code after save (uses ID)
-        saved.setOrderCode("AS-" + String.format("%04d", saved.getId()));
-        saved = orderRepo.save(saved);
+        // 6. Generar el código AS-XXXX solo si es un pedido nuevo
+        if (saved.getOrderCode() == null || saved.getOrderCode().isEmpty()) {
+            saved.setOrderCode("AS-" + String.format("%04d", saved.getId()));
+            saved = orderRepo.save(saved);
+        } else {
+            // Si se agregó a un pedido existente, forzamos un recalculo del consolidado
+            // (al volver a PENDIENTE_SEPARACION, sale temporalmente de tus ganancias hasta que lo verifiques)
+            recalculateConsolidado(saved.getConsolidado().getId());
+        }
 
         return saved;
     }
@@ -164,11 +203,6 @@ public class ConsolidadoService {
         return consolidadoRepo.save(c);
     }
 
-    /**
-     * Enable merchandise: moves store purchases to retail inventory
-     * AND enables second payment for client orders (SEPARADO → PENDIENTE_RESTO).
-     * Also marks consolidado as ENTREGADO.
-     */
     @Transactional
     public Consolidado enableMerchandise(Long consolidadoId) {
         Consolidado c = getById(consolidadoId);
@@ -191,7 +225,6 @@ public class ConsolidadoService {
                     Product product = item.getProduct();
                     if (product.getRetailPricePen() == null || product.getRetailPricePen() <= 0) {
                         double cost = item.getUnitPricePen() != null ? item.getUnitPricePen() : 0;
-                        // Default retail price: cost + 50% margin
                         product.setRetailPricePen(Math.round(cost * 1.5 * 100.0) / 100.0);
                         productRepo.save(product);
                     }
@@ -218,9 +251,6 @@ public class ConsolidadoService {
                 .orElseThrow(() -> new RuntimeException("Pedido no encontrado con código: " + code));
     }
 
-    /**
-     * Recalculates consolidado totals based on active orders.
-     */
     @Transactional
     public void recalculateConsolidado(Long consolidadoId) {
         Consolidado c = getById(consolidadoId);
@@ -297,9 +327,6 @@ public class ConsolidadoService {
         saved = orderRepo.save(saved);
 
         recalculateConsolidado(active.getId());
-
-        // NOTE: Do NOT add to retail inventory here.
-        // Stock is added when admin clicks "Habilitar Mercancía" after shipment arrives.
 
         return saved;
     }

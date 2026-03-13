@@ -25,9 +25,17 @@ public class OrderController {
 
     // Public: client creates an order
     @PostMapping
-    public ResponseEntity<Order> createOrder(@Valid @RequestBody OrderRequest request) {
-        Order order = consolidadoService.createOrder(request);
-        return ResponseEntity.ok(order);
+    public ResponseEntity<?> createOrder(@Valid @RequestBody OrderRequest request) {
+        try {
+            Order order = consolidadoService.createOrder(request);
+            return ResponseEntity.ok(order);
+        } catch (IllegalArgumentException e) {
+            // Si hay un error (ej. el código no existe o el celular no coincide), devolvemos un 400 amigable
+            return ResponseEntity.status(400).body(Map.of("message", e.getMessage()));
+        } catch (Exception e) {
+            // Error general del servidor
+            return ResponseEntity.status(500).body(Map.of("message", "Error interno al procesar el pedido."));
+        }
     }
 
     // Admin: get all orders
