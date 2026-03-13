@@ -194,13 +194,11 @@ public class AdminController {
     @DeleteMapping("/factory-reset-operations")
     @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Map<String, String>> resetOperations() {
-        // 1. Eliminar historial de ventas e inventario de tienda
-        retailSaleRepo.deleteAll();
-        retailInventoryRepo.deleteAll();
+        // 1. Borrado forzado en bloque a nivel de SQL (ignora la memoria caché)
+        retailSaleRepo.deleteAllInBatch();
+        retailInventoryRepo.deleteAllInBatch();
 
         // 2. Eliminar pedidos y consolidados
-        // Gracias al CascadeType.ALL y orphanRemoval = true en tu modelo Order,
-        // los OrderItems se eliminarán solos sin causar errores de Foreign Key.
         orderRepo.deleteAll();
         consolidadoRepo.deleteAll();
 
@@ -209,6 +207,6 @@ public class AdminController {
         c.setStatus("ABIERTO");
         consolidadoRepo.save(c);
 
-        return ResponseEntity.ok(Map.of("message", "Operaciones reiniciadas en cero exitosamente. Tus perfumes y configuraciones están a salvo."));
+        return ResponseEntity.ok(Map.of("message", "Operaciones y ventas reiniciadas en cero absoluto exitosamente."));
     }
 }
