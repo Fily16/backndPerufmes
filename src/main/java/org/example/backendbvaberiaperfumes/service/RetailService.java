@@ -116,6 +116,15 @@ public class RetailService {
         return total != null ? total : 0;
     }
 
+    // ESTE ES EL MÉTODO QUE SE HABÍA BORRADO
+    public Map<Long, Integer> getStockByProduct() {
+        Map<Long, Integer> map = new HashMap<>();
+        for (Object[] row : inventoryRepo.findStockByProduct()) {
+            map.put((Long) row[0], ((Number) row[1]).intValue());
+        }
+        return map;
+    }
+
     public double getTotalRevenue() {
         Double total = saleRepo.sumTotalRevenue();
         return total != null ? total : 0.0;
