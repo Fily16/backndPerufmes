@@ -112,22 +112,18 @@ public class RetailService {
     }
 
     public int getTotalStock() {
-        return inventoryRepo.sumTotalStock();
-    }
-
-    public Map<Long, Integer> getStockByProduct() {
-        Map<Long, Integer> map = new HashMap<>();
-        for (Object[] row : inventoryRepo.findStockByProduct()) {
-            map.put((Long) row[0], ((Number) row[1]).intValue());
-        }
-        return map;
+        Integer total = inventoryRepo.sumTotalStock();
+        return total != null ? total : 0;
     }
 
     public double getTotalRevenue() {
-        return saleRepo.sumTotalRevenue();
+        Double total = saleRepo.sumTotalRevenue();
+        return total != null ? total : 0.0;
     }
 
     public double getTotalProfit() {
-        return saleRepo.sumTotalProfit();
+        Double total = saleRepo.sumTotalProfit();
+        return total != null ? total : 0.0;
     }
+
 }

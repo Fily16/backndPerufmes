@@ -184,7 +184,6 @@ public class AdminController {
                     .body("{\"error\":\"" + e.getMessage().replace("\"", "'") + "\"}");
         }
     }
-
     // --- BOTÓN DE REINICIO DE OPERACIONES ---
     @org.springframework.beans.factory.annotation.Autowired
     private org.example.backendbvaberiaperfumes.repository.RetailSaleRepository retailSaleRepo;
@@ -200,10 +199,12 @@ public class AdminController {
         retailInventoryRepo.deleteAll();
 
         // 2. Eliminar pedidos y consolidados
+        // Gracias al CascadeType.ALL y orphanRemoval = true en tu modelo Order,
+        // los OrderItems se eliminarán solos sin causar errores de Foreign Key.
         orderRepo.deleteAll();
         consolidadoRepo.deleteAll();
 
-        // 3. Crear un consolidado base abierto para que el sistema siga funcionando sin errores
+        // 3. Crear un consolidado base abierto para que el sistema inicie bien
         org.example.backendbvaberiaperfumes.model.Consolidado c = new org.example.backendbvaberiaperfumes.model.Consolidado();
         c.setStatus("ABIERTO");
         consolidadoRepo.save(c);
