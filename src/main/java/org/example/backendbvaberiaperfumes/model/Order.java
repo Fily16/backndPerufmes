@@ -36,6 +36,13 @@ public class Order {
     private Double depositAmountPen = 0.0;
     private Double remainingPen = 0.0;
 
+    // --- NUEVOS CAMPOS DE ENVÍO ---
+    private String deliveryMethod; // "LIMA" o "PROVINCIA"
+    private String shippingName;
+    private String shippingDni;
+    private String shippingPhone;
+    private String shippingAddress;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> items = new ArrayList<>();
 
@@ -59,6 +66,7 @@ public class Order {
                 .sum();
     }
 
+    // Getters y Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
@@ -90,6 +98,22 @@ public class Order {
 
     public Double getTotalPen() { return totalPen; }
     public void setTotalPen(Double totalPen) { this.totalPen = totalPen; }
+
+    // --- Getters y Setters de Envío ---
+    public String getDeliveryMethod() { return deliveryMethod; }
+    public void setDeliveryMethod(String deliveryMethod) { this.deliveryMethod = deliveryMethod; }
+
+    public String getShippingName() { return shippingName; }
+    public void setShippingName(String shippingName) { this.shippingName = shippingName; }
+
+    public String getShippingDni() { return shippingDni; }
+    public void setShippingDni(String shippingDni) { this.shippingDni = shippingDni; }
+
+    public String getShippingPhone() { return shippingPhone; }
+    public void setShippingPhone(String shippingPhone) { this.shippingPhone = shippingPhone; }
+
+    public String getShippingAddress() { return shippingAddress; }
+    public void setShippingAddress(String shippingAddress) { this.shippingAddress = shippingAddress; }
 
     public List<OrderItem> getItems() { return items; }
     public void setItems(List<OrderItem> items) { this.items = items; }

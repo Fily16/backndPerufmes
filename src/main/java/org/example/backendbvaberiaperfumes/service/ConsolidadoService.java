@@ -65,29 +65,28 @@ public class ConsolidadoService {
     public Order createOrder(OrderRequest request) {
         Order order;
 
-        // 1. ¿El cliente quiere agregar a un pedido existente?
+        // 1. ¿Agregar a un pedido existente?
         if (request.getExistingOrderCode() != null && !request.getExistingOrderCode().trim().isEmpty()) {
             order = orderRepo.findByOrderCode(request.getExistingOrderCode().trim())
                     .orElseThrow(() -> new IllegalArgumentException("El código de pedido ingresado no existe."));
 
             if (!order.getClientPhone().equals(request.getClientPhone())) {
-                throw new IllegalArgumentException("Por seguridad, el celular ingresado debe coincidir con el pedido original.");
+                throw new IllegalArgumentException("El celular debe coincidir con el pedido original.");
             }
 
             if (!order.getConsolidado().getStatus().equals("ABIERTO")) {
-                throw new IllegalArgumentException("El consolidado de este pedido ya fue cerrado. No se pueden agregar más productos.");
+                throw new IllegalArgumentException("El consolidado de este pedido ya fue cerrado.");
             }
 
-            // Concatenar el nuevo Yape y retroceder el estado para requerir verificación manual
             String oldYape = order.getYapeReference() != null ? order.getYapeReference() : "Sin Voucher";
             String newYape = request.getYapeReference() != null ? request.getYapeReference() : "Sin Voucher";
             order.setYapeReference(oldYape + " | " + newYape);
             order.setPaymentStatus("PENDIENTE_SEPARACION");
 
         } else {
-            // 2. Es un pedido totalmente nuevo
+            // 2. Pedido totalmente nuevo
             Consolidado active = consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
-                    .orElseThrow(() -> new RuntimeException("No hay consolidado abierto. No se pueden hacer pedidos en este momento."));
+                    .orElseThrow(() -> new RuntimeException("No hay consolidado abierto."));
 
             order = new Order();
             order.setConsolidado(active);
@@ -95,52 +94,74 @@ public class ConsolidadoService {
             order.setClientPhone(request.getClientPhone());
             order.setYapeReference(request.getYapeReference());
             order.setPaymentStatus("PENDIENTE_SEPARACION");
+
+            // Inicializar la lista si es nuevo
+            order.setItems(new ArrayList<>());
         }
 
-        // 3. Contar las unidades previas si ya existían para recalcular bien la separación
-        int totalUnits = 0;
-        if (order.getItems() != null) {
-            for (OrderItem existingItem : order.getItems()) {
-                totalUnits += existingItem.getQuantity();
-            }
-        }
+        // 3. Actualizar datos de envío si el cliente los cambió o los llenó por primera vez
+        if (request.getDeliveryMethod() != null) order.setDeliveryMethod(request.getDeliveryMethod());
+        if (request.getShippingName() != null) order.setShippingName(request.getShippingName());
+        if (request.getShippingDni() != null) order.setShippingDni(request.getShippingDni());
+        if (request.getShippingPhone() != null) order.setShippingPhone(request.getShippingPhone());
+        if (request.getShippingAddress() != null) order.setShippingAddress(request.getShippingAddress());
 
-        // 4. Agregar los nuevos productos al pedido (nuevo o existente)
+        // 4. Agregar los nuevos productos (y fusionarlos si ya existen)
+        int newUnitsAdded = 0; // Contamos solo lo nuevo que entra en este carrito
+
         for (OrderRequest.OrderItemRequest itemReq : request.getItems()) {
             Product product = productRepo.findById(itemReq.getProductId())
                     .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
 
-            OrderItem item = new OrderItem();
-            item.setOrder(order);
-            item.setProduct(product);
-            item.setQuantity(itemReq.getQuantity());
-            totalUnits += itemReq.getQuantity();
+            newUnitsAdded += itemReq.getQuantity();
+
+            // Buscar si el perfume ya estaba en la orden
+            OrderItem existingItem = null;
+            if (order.getItems() != null) {
+                for (OrderItem oi : order.getItems()) {
+                    if (oi.getProduct().getId().equals(product.getId())) {
+                        existingItem = oi;
+                        break;
+                    }
+                }
+            }
 
             double unitPrice = itemReq.getUnitPricePen() != null
                     ? itemReq.getUnitPricePen()
                     : (product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0);
-            item.setUnitPricePen(unitPrice);
-            item.calculateSubtotal();
-            order.getItems().add(item);
+
+            if (existingItem != null) {
+                // FUSIÓN: Sumamos la cantidad nueva a la anterior y actualizamos
+                existingItem.setQuantity(existingItem.getQuantity() + itemReq.getQuantity());
+                existingItem.setUnitPricePen(unitPrice);
+                existingItem.calculateSubtotal();
+            } else {
+                // CREACIÓN: Es un perfume que no había pedido antes
+                OrderItem item = new OrderItem();
+                item.setOrder(order);
+                item.setProduct(product);
+                item.setQuantity(itemReq.getQuantity());
+                item.setUnitPricePen(unitPrice);
+                item.calculateSubtotal();
+                order.getItems().add(item);
+            }
         }
 
         order.recalculateTotal();
 
-        // 5. Recalcular el depósito de separación (aplicado al TOTAL de unidades)
-        double depositPerUnit = pricing.getDepositPerUnit();
-        double depositAmount = totalUnits * depositPerUnit;
-        order.setDepositAmountPen(depositAmount);
-        order.setRemainingPen(order.getTotalPen() - depositAmount);
+        // 5. Cobrar SOLO la separación de las unidades nuevas añadidas
+        double currentDeposit = order.getDepositAmountPen() != null ? order.getDepositAmountPen() : 0.0;
+        double addedDeposit = newUnitsAdded * pricing.getDepositPerUnit();
+        order.setDepositAmountPen(currentDeposit + addedDeposit);
+        order.setRemainingPen(order.getTotalPen() - order.getDepositAmountPen());
 
         Order saved = orderRepo.save(order);
 
-        // 6. Generar el código AS-XXXX solo si es un pedido nuevo
+        // 6. Generar el código AS-XXXX solo si es nuevo
         if (saved.getOrderCode() == null || saved.getOrderCode().isEmpty()) {
             saved.setOrderCode("AS-" + String.format("%04d", saved.getId()));
             saved = orderRepo.save(saved);
         } else {
-            // Si se agregó a un pedido existente, forzamos un recalculo del consolidado
-            // (al volver a PENDIENTE_SEPARACION, sale temporalmente de tus ganancias hasta que lo verifiques)
             recalculateConsolidado(saved.getConsolidado().getId());
         }
 
