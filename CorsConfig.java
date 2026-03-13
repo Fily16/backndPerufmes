@@ -14,10 +14,11 @@ public class CorsConfig {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
                 registry.addMapping("/**")
-                        // Usamos allowedOriginPatterns para permitir comodines (*)
                         .allowedOriginPatterns(
-                                "https://*.vercel.app", // Acepta la URL principal y todas las previews de Vercel
-                                "http://localhost:*"
+                                "https://*.vercel.app",          // Enlaces de Vercel
+                                "http://localhost:*",            // Pruebas locales
+                                "https://www.aromastudiope.com", // Tu nuevo dominio (con www)
+                                "https://aromastudiope.com"      // Tu nuevo dominio (sin www)
                         )
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
