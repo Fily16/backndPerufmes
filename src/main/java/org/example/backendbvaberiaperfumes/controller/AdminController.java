@@ -184,4 +184,30 @@ public class AdminController {
                     .body("{\"error\":\"" + e.getMessage().replace("\"", "'") + "\"}");
         }
     }
+
+    // --- BOTÓN DE REINICIO DE OPERACIONES ---
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.example.backendbvaberiaperfumes.repository.RetailSaleRepository retailSaleRepo;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.example.backendbvaberiaperfumes.repository.RetailInventoryRepository retailInventoryRepo;
+
+    @DeleteMapping("/factory-reset-operations")
+    @org.springframework.transaction.annotation.Transactional
+    public ResponseEntity<Map<String, String>> resetOperations() {
+        // 1. Eliminar historial de ventas e inventario de tienda
+        retailSaleRepo.deleteAll();
+        retailInventoryRepo.deleteAll();
+
+        // 2. Eliminar pedidos y consolidados
+        orderRepo.deleteAll();
+        consolidadoRepo.deleteAll();
+
+        // 3. Crear un consolidado base abierto para que el sistema siga funcionando sin errores
+        org.example.backendbvaberiaperfumes.model.Consolidado c = new org.example.backendbvaberiaperfumes.model.Consolidado();
+        c.setStatus("ABIERTO");
+        consolidadoRepo.save(c);
+
+        return ResponseEntity.ok(Map.of("message", "Operaciones reiniciadas en cero exitosamente. Tus perfumes y configuraciones están a salvo."));
+    }
 }

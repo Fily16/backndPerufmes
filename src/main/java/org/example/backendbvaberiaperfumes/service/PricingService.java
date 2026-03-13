@@ -93,7 +93,7 @@ public class PricingService {
     // --- Excel formula: Resumen - Envío extra Miami ---
     // =IF(B32="Sí",IF(B14<1000,35,0),0)
     public double calculateExtraMiamiShipping(double subtotalUsd) {
-        return subtotalUsd < 1000 ? 15.0 : 0.0;
+        return subtotalUsd < 1000 ? 0.0 : 0.0;
     }
 
     // --- Suggested prices (Calculadora sheet) ---
