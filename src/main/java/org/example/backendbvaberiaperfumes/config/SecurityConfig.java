@@ -59,11 +59,13 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // Aquí agregamos el comodín para Vercel
+        // AQUÍ AGREGAMOS TUS DOMINIOS NUEVOS
         config.setAllowedOriginPatterns(List.of(
                 "http://localhost:*",
                 "https://fily16.github.io",
-                "https://*.vercel.app"
+                "https://*.vercel.app",
+                "https://www.aromastudiope.com",
+                "https://aromastudiope.com"
         ));
 
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));

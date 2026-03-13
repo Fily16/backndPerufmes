@@ -17,7 +17,7 @@ public class CorsConfig {
                         .allowedOriginPatterns(
                                 "https://*.vercel.app",          // Enlaces de Vercel
                                 "http://localhost:*",            // Pruebas locales
-                                "https://www.aromastudiope.com/", // Tu nuevo dominio (con www)
+                                "https://www.aromastudiope.com", // Tu nuevo dominio (con www)
                                 "https://aromastudiope.com"      // Tu nuevo dominio (sin www)
                         )
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
