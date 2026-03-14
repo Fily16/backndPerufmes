@@ -1,7 +1,5 @@
 package org.example.backendbvaberiaperfumes.controller;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.backendbvaberiaperfumes.model.AppConfig;
 import org.example.backendbvaberiaperfumes.model.RetailInventory;
 import org.example.backendbvaberiaperfumes.model.RetailSale;
@@ -9,7 +7,6 @@ import org.example.backendbvaberiaperfumes.repository.AppConfigRepository;
 import org.example.backendbvaberiaperfumes.service.RetailService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Map;
@@ -21,58 +18,15 @@ public class RetailController {
     private final RetailService retailService;
     private final AppConfigRepository configRepo;
 
-    // Auto-sync: rate limit to max once per 60 seconds
-    private volatile long lastSheetSync = 0;
-    private static final long SHEET_SYNC_INTERVAL_MS = 60_000;
-
     public RetailController(RetailService retailService, AppConfigRepository configRepo) {
         this.retailService = retailService;
         this.configRepo = configRepo;
     }
 
-    // --- Public: stock levels for catalog (auto-syncs from Google Sheet) ---
+    // --- Public: stock levels for catalog ---
     @GetMapping("/stock")
     public Map<Long, Integer> getRetailStock() {
-        syncFromSheetIfNeeded();
         return retailService.getStockByProduct();
-    }
-
-    /**
-     * Auto-sync stock from Google Sheet.
-     * Reads the Sheet's current stock and adjusts backend inventory to match.
-     * Rate-limited to max once per minute to avoid spamming Google.
-     * Fails silently if Sheet is not configured or unreachable.
-     */
-    private void syncFromSheetIfNeeded() {
-        long now = System.currentTimeMillis();
-        if (now - lastSheetSync < SHEET_SYNC_INTERVAL_MS) return;
-        lastSheetSync = now;
-
-        try {
-            String scriptUrl = configRepo.findByConfigKey("google_script_url")
-                    .map(AppConfig::getConfigValue).orElse(null);
-            if (scriptUrl == null || scriptUrl.isBlank()) return;
-
-            RestTemplate rest = new RestTemplate();
-            ResponseEntity<String> response = rest.getForEntity(
-                    scriptUrl + "?action=getSheetStock", String.class);
-            String body = response.getBody();
-            if (body == null || body.trim().startsWith("<")) return;
-
-            ObjectMapper mapper = new ObjectMapper();
-            Map<String, Object> sheetStock = mapper.readValue(body,
-                    new TypeReference<Map<String, Object>>() {});
-
-            for (Map.Entry<String, Object> entry : sheetStock.entrySet()) {
-                try {
-                    Long productId = Long.valueOf(entry.getKey());
-                    int target = ((Number) entry.getValue()).intValue();
-                    retailService.adjustStockToMatch(productId, target);
-                } catch (Exception ignored) {}
-            }
-        } catch (Exception e) {
-            // Sheet sync failed silently - return backend stock as-is
-        }
     }
 
     // --- Inventory ---
