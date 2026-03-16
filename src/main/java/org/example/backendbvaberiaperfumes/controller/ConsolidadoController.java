@@ -62,4 +62,11 @@ public class ConsolidadoController {
         Consolidado c = consolidadoService.getOrCreateActive();
         return ResponseEntity.ok(c);
     }
+
+    // Admin: delete consolidado (only non-ABIERTO)
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteConsolidado(@PathVariable Long id) {
+        consolidadoService.deleteConsolidado(id);
+        return ResponseEntity.ok().build();
+    }
 }

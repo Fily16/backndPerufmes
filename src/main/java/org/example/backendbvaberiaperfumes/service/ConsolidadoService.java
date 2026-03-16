@@ -263,6 +263,17 @@ public class ConsolidadoService {
         return consolidadoRepo.save(c);
     }
 
+    @Transactional
+    public void deleteConsolidado(Long id) {
+        Consolidado c = getById(id);
+        if ("ABIERTO".equals(c.getStatus())) {
+            throw new RuntimeException("No se puede eliminar un consolidado abierto.");
+        }
+        List<Order> orders = orderRepo.findByConsolidado_Id(id);
+        orderRepo.deleteAll(orders);
+        consolidadoRepo.delete(c);
+    }
+
     public List<Order> getOrdersByConsolidado(Long consolidadoId) {
         return orderRepo.findByConsolidado_Id(consolidadoId);
     }
@@ -270,6 +281,64 @@ public class ConsolidadoService {
     public Order getOrderByCode(String code) {
         return orderRepo.findByOrderCode(code)
                 .orElseThrow(() -> new RuntimeException("Pedido no encontrado con código: " + code));
+    }
+
+    // --- Client self-edit order ---
+    @Transactional
+    public Order editOrderByClient(String orderCode, String clientPhone,
+                                   List<OrderRequest.OrderItemRequest> newItems) {
+        Order order = orderRepo.findByOrderCode(orderCode.trim())
+                .orElseThrow(() -> new IllegalArgumentException("El código de pedido no existe."));
+
+        if (!order.getClientPhone().equals(clientPhone)) {
+            throw new IllegalArgumentException("El celular no coincide con el pedido.");
+        }
+
+        if (!"ABIERTO".equals(order.getConsolidado().getStatus())) {
+            throw new IllegalArgumentException("El consolidado ya fue cerrado, no se puede editar.");
+        }
+
+        // Count old units for deposit calculation
+        int oldUnits = order.getItems().stream().mapToInt(OrderItem::getQuantity).sum();
+
+        // Clear existing items
+        order.getItems().clear();
+
+        int newTotalUnits = 0;
+        for (OrderRequest.OrderItemRequest itemReq : newItems) {
+            Product product = productRepo.findById(itemReq.getProductId())
+                    .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
+
+            OrderItem item = new OrderItem();
+            item.setOrder(order);
+            item.setProduct(product);
+            item.setQuantity(itemReq.getQuantity());
+
+            double unitPrice = itemReq.getUnitPricePen() != null
+                    ? itemReq.getUnitPricePen()
+                    : (product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0);
+            item.setUnitPricePen(unitPrice);
+            item.calculateSubtotal();
+            order.getItems().add(item);
+            newTotalUnits += itemReq.getQuantity();
+        }
+
+        order.recalculateTotal();
+
+        // Deposit: only charge extra if more units were added
+        double currentDeposit = order.getDepositAmountPen() != null ? order.getDepositAmountPen() : 0;
+        if (newTotalUnits > oldUnits) {
+            int extraUnits = newTotalUnits - oldUnits;
+            double extraDeposit = extraUnits * pricing.getDepositPerUnit();
+            order.setDepositAmountPen(currentDeposit + extraDeposit);
+            order.setPaymentStatus("PENDIENTE_SEPARACION");
+        }
+        // If same or fewer units, deposit stays the same
+        order.setRemainingPen(order.getTotalPen() - order.getDepositAmountPen());
+
+        Order saved = orderRepo.save(order);
+        recalculateConsolidado(order.getConsolidado().getId());
+        return saved;
     }
 
     @Transactional

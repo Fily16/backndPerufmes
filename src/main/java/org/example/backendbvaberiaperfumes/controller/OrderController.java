@@ -87,4 +87,47 @@ public class OrderController {
         Order order = consolidadoService.rejectPayment(id);
         return ResponseEntity.ok(order);
     }
+
+    // Public: client edits their own order
+    @PutMapping("/edit-by-client")
+    public ResponseEntity<?> editByClient(@Valid @RequestBody OrderRequest request) {
+        try {
+            if (request.getExistingOrderCode() == null || request.getExistingOrderCode().isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("message", "Se requiere el código de pedido."));
+            }
+            Order order = consolidadoService.editOrderByClient(
+                    request.getExistingOrderCode(),
+                    request.getClientPhone(),
+                    request.getItems());
+            return ResponseEntity.ok(order);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(400).body(Map.of("message", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("message", "Error al editar el pedido."));
+        }
+    }
+
+    // Admin: update client info (name, phone)
+    @PutMapping("/{id}/update-client")
+    public ResponseEntity<Order> updateClient(@PathVariable Long id, @RequestBody Map<String, String> body) {
+        Order order = orderRepo.findById(id)
+                .orElseThrow(() -> new RuntimeException("Order not found: " + id));
+        if (body.containsKey("clientName")) order.setClientName(body.get("clientName"));
+        if (body.containsKey("clientPhone")) order.setClientPhone(body.get("clientPhone"));
+        return ResponseEntity.ok(orderRepo.save(order));
+    }
+
+    // Admin: delete rejected order
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteOrder(@PathVariable Long id) {
+        Order order = orderRepo.findById(id)
+                .orElseThrow(() -> new RuntimeException("Order not found: " + id));
+        if (!"RECHAZADO".equals(order.getPaymentStatus())) {
+            return ResponseEntity.badRequest().build();
+        }
+        Long consolidadoId = order.getConsolidado().getId();
+        orderRepo.delete(order);
+        consolidadoService.recalculateConsolidado(consolidadoId);
+        return ResponseEntity.ok().build();
+    }
 }
