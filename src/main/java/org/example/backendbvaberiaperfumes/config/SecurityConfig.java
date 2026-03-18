@@ -42,6 +42,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/public").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/retail/stock").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/retail/form-sale").permitAll()
+                        .requestMatchers(HttpMethod.PUT, "/api/orders/edit-by-client").permitAll()
                         .requestMatchers("/h2-console/**").permitAll()
                         // Admin endpoints
                         .requestMatchers("/api/admin/**").authenticated()
