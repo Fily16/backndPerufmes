@@ -70,7 +70,8 @@ public class ConsolidadoService {
             order = orderRepo.findByOrderCode(request.getExistingOrderCode().trim())
                     .orElseThrow(() -> new IllegalArgumentException("El código de pedido ingresado no existe."));
 
-            if (!order.getClientPhone().equals(request.getClientPhone())) {
+            if (!order.getClientPhone().replaceAll("\\s+", "").equals(
+                    request.getClientPhone().replaceAll("\\s+", ""))) {
                 throw new IllegalArgumentException("El celular debe coincidir con el pedido original.");
             }
 
@@ -290,7 +291,9 @@ public class ConsolidadoService {
         Order order = orderRepo.findByOrderCode(orderCode.trim())
                 .orElseThrow(() -> new IllegalArgumentException("El código de pedido no existe."));
 
-        if (!order.getClientPhone().equals(clientPhone)) {
+        String storedPhone = order.getClientPhone().replaceAll("\\s+", "");
+        String inputPhone = clientPhone.replaceAll("\\s+", "");
+        if (!storedPhone.equals(inputPhone)) {
             throw new IllegalArgumentException("El celular no coincide con el pedido.");
         }
 
@@ -298,12 +301,17 @@ public class ConsolidadoService {
             throw new IllegalArgumentException("El consolidado ya fue cerrado, no se puede editar.");
         }
 
-        // Count old units for deposit calculation
-        int oldUnits = order.getItems().stream().mapToInt(OrderItem::getQuantity).sum();
+        // Save old deposit and units BEFORE touching items
+        double originalDeposit = order.getDepositAmountPen() != null ? order.getDepositAmountPen() : 0;
+        int oldUnits = 0;
+        for (OrderItem oi : order.getItems()) {
+            oldUnits += oi.getQuantity();
+        }
 
-        // Clear existing items
+        // Clear existing items (orphanRemoval=true deletes them from DB)
         order.getItems().clear();
 
+        // Add new items
         int newTotalUnits = 0;
         for (OrderRequest.OrderItemRequest itemReq : newItems) {
             Product product = productRepo.findById(itemReq.getProductId())
@@ -325,15 +333,17 @@ public class ConsolidadoService {
 
         order.recalculateTotal();
 
-        // Deposit: only charge extra if more units were added
-        double currentDeposit = order.getDepositAmountPen() != null ? order.getDepositAmountPen() : 0;
+        // Deposit: ONLY charge extra if client ADDED more units
+        // If same or fewer units -> deposit stays EXACTLY the same (just swapped products)
         if (newTotalUnits > oldUnits) {
             int extraUnits = newTotalUnits - oldUnits;
             double extraDeposit = extraUnits * pricing.getDepositPerUnit();
-            order.setDepositAmountPen(currentDeposit + extraDeposit);
+            order.setDepositAmountPen(originalDeposit + extraDeposit);
             order.setPaymentStatus("PENDIENTE_SEPARACION");
+        } else {
+            // Keep original deposit - no change
+            order.setDepositAmountPen(originalDeposit);
         }
-        // If same or fewer units, deposit stays the same
         order.setRemainingPen(order.getTotalPen() - order.getDepositAmountPen());
 
         Order saved = orderRepo.save(order);
