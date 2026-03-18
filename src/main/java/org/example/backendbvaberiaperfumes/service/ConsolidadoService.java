@@ -333,16 +333,17 @@ public class ConsolidadoService {
 
         order.recalculateTotal();
 
-        // Deposit: ONLY charge extra if client ADDED more units
-        // If same or fewer units -> deposit stays EXACTLY the same (just swapped products)
+        // Deposit: recalculate based on current total units
+        double depositPerUnit = pricing.getDepositPerUnit();
+        double correctDeposit = newTotalUnits * depositPerUnit;
+
         if (newTotalUnits > oldUnits) {
-            int extraUnits = newTotalUnits - oldUnits;
-            double extraDeposit = extraUnits * pricing.getDepositPerUnit();
-            order.setDepositAmountPen(originalDeposit + extraDeposit);
+            // Client added more units → needs to pay extra, mark as pending
+            order.setDepositAmountPen(correctDeposit);
             order.setPaymentStatus("PENDIENTE_SEPARACION");
         } else {
-            // Keep original deposit - no change
-            order.setDepositAmountPen(originalDeposit);
+            // Same or fewer units → adjust deposit to match actual units
+            order.setDepositAmountPen(correctDeposit);
         }
         order.setRemainingPen(order.getTotalPen() - order.getDepositAmountPen());
 
