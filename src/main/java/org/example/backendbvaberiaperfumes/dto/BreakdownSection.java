@@ -1,8 +1,12 @@
 package org.example.backendbvaberiaperfumes.dto;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class BreakdownSection {
     private int orderCount;
     private int totalUnits;
+    private List<ProductCount> productCounts = new ArrayList<>();
     private int weightPerfumesG;
     private int boxesNeeded;
     private int weightBoxesG;
@@ -47,4 +51,6 @@ public class BreakdownSection {
     public void setProfitPen(Double profitPen) { this.profitPen = profitPen; }
     public Double getMarginPercent() { return marginPercent; }
     public void setMarginPercent(Double marginPercent) { this.marginPercent = marginPercent; }
+    public List<ProductCount> getProductCounts() { return productCounts; }
+    public void setProductCounts(List<ProductCount> productCounts) { this.productCounts = productCounts; }
 }

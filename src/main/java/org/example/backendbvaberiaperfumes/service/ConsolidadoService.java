@@ -7,9 +7,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class ConsolidadoService {
@@ -506,6 +505,10 @@ public class ConsolidadoService {
         double subtotalProductsUsd = 0;
         double totalRevenuePen = 0;
 
+        // Aggregate quantity per product
+        Map<Long, int[]> productQtyMap = new LinkedHashMap<>();
+        Map<Long, Product> productMap = new HashMap<>();
+
         for (OrderItem item : items) {
             int qty = item.getQuantity();
             Product p = item.getProduct();
@@ -513,7 +516,21 @@ public class ConsolidadoService {
             weightPerfumesG += (p.getWeightG() != null ? p.getWeightG() : 0) * qty;
             subtotalProductsUsd += (p.getPriceUsd() != null ? p.getPriceUsd() : 0) * qty;
             totalRevenuePen += item.getSubtotalPen() != null ? item.getSubtotalPen() : 0;
+
+            productQtyMap.computeIfAbsent(p.getId(), k -> new int[]{0})[0] += qty;
+            productMap.putIfAbsent(p.getId(), p);
         }
+
+        // Build per-product counts sorted by quantity desc
+        List<ProductCount> productCounts = productQtyMap.entrySet().stream()
+                .map(e -> {
+                    Product p = productMap.get(e.getKey());
+                    return new ProductCount(p.getId(), p.getBrand(), p.getName(),
+                            p.getMl() != null ? p.getMl() : 0, e.getValue()[0]);
+                })
+                .sorted(Comparator.comparingInt(ProductCount::getQuantity).reversed())
+                .collect(Collectors.toList());
+        s.setProductCounts(productCounts);
 
         int boxesNeeded = totalUnits > 0 ? pricing.calculateBoxesNeeded(totalUnits) : 0;
         int weightBoxesG = (int) (boxesNeeded * pricing.getBoxWeightG());

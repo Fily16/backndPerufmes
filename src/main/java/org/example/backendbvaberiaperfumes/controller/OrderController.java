@@ -117,12 +117,13 @@ public class OrderController {
         return ResponseEntity.ok(orderRepo.save(order));
     }
 
-    // Admin: delete rejected order
+    // Admin: delete rejected or separated order
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteOrder(@PathVariable Long id) {
         Order order = orderRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("Order not found: " + id));
-        if (!"RECHAZADO".equals(order.getPaymentStatus())) {
+        String status = order.getPaymentStatus();
+        if (!"RECHAZADO".equals(status) && !"SEPARADO".equals(status)) {
             return ResponseEntity.badRequest().build();
         }
         Long consolidadoId = order.getConsolidado().getId();
