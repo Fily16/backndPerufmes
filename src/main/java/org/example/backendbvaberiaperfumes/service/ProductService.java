@@ -60,7 +60,7 @@ public class ProductService {
 
     @Transactional
     public void delete(Long id) {
-        orderItemRepo.nullifyProductReferences(id);
+        orderItemRepo.deleteByProductId(id);
         productRepo.deleteById(id);
     }
 }
