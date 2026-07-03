@@ -459,6 +459,15 @@ public class AdminController {
     @org.springframework.beans.factory.annotation.Autowired
     private org.example.backendbvaberiaperfumes.repository.RetailInventoryRepository retailInventoryRepo;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.example.backendbvaberiaperfumes.service.EmailService emailService;
+
+    /** Diagnóstico de correo: intenta enviar una prueba y devuelve el resultado o el error exacto. */
+    @GetMapping("/mail-test")
+    public Map<String, Object> mailTest(@RequestParam(required = false) String to) {
+        return emailService.diagnose(to);
+    }
+
     @DeleteMapping("/factory-reset-operations")
     @org.springframework.transaction.annotation.Transactional
     public ResponseEntity<Map<String, String>> resetOperations() {

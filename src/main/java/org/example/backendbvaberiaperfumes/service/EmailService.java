@@ -45,6 +45,35 @@ public class EmailService {
         this.orderItemRepo = orderItemRepo;
     }
 
+    /** Diagnóstico: intenta enviar un correo de prueba y devuelve el resultado o el error exacto. */
+    public java.util.Map<String, Object> diagnose(String to) {
+        java.util.Map<String, Object> r = new java.util.LinkedHashMap<>();
+        r.put("user", mailUsername);
+        r.put("from", (from == null || from.isBlank()) ? mailUsername : from);
+        r.put("passwordSet", mailPassword != null && !mailPassword.isBlank());
+        r.put("recipients", notifyEmails);
+        if (mailPassword == null || mailPassword.isBlank()) {
+            r.put("result", "MAIL_PASSWORD vacío o no configurado");
+            return r;
+        }
+        String dest = (to != null && !to.isBlank()) ? to.trim() : mailUsername;
+        try {
+            MimeMessage msg = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(msg, true, "UTF-8");
+            helper.setFrom((from == null || from.isBlank()) ? mailUsername : from);
+            helper.setTo(dest);
+            helper.setSubject("Prueba de correo · AromaStudio");
+            helper.setText("<b>El envío de correos funciona.</b> Este es un mensaje de prueba.", true);
+            mailSender.send(msg);
+            r.put("result", "ENVIADO OK a " + dest);
+        } catch (Exception e) {
+            Throwable c = e; StringBuilder sb = new StringBuilder();
+            while (c != null) { sb.append(c.getClass().getSimpleName()).append(": ").append(c.getMessage()).append(" | "); c = c.getCause(); }
+            r.put("result", "ERROR -> " + sb);
+        }
+        return r;
+    }
+
     @jakarta.annotation.PostConstruct
     void logConfig() {
         boolean passwordSet = mailPassword != null && !mailPassword.isBlank();
