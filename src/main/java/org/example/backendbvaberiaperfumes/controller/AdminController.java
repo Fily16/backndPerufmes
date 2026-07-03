@@ -1,8 +1,12 @@
 package org.example.backendbvaberiaperfumes.controller;
 
 import org.example.backendbvaberiaperfumes.dto.*;
+import org.example.backendbvaberiaperfumes.model.Admin;
 import org.example.backendbvaberiaperfumes.model.AppConfig;
+import org.example.backendbvaberiaperfumes.model.Consolidado;
 import org.example.backendbvaberiaperfumes.model.Order;
+import org.example.backendbvaberiaperfumes.model.OrderItem;
+import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.repository.*;
 import org.example.backendbvaberiaperfumes.service.ConsolidadoService;
 import org.example.backendbvaberiaperfumes.service.PricingService;
@@ -11,8 +15,11 @@ import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/admin")
@@ -37,6 +44,243 @@ public class AdminController {
         this.retailService = retailService;
         this.pricingService = pricingService;
         this.consolidadoService = consolidadoService;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private AdminRepository adminRepo;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private SupplierOfferRepository offerRepo;
+
+    // --- ERP: faltantes (perfumes pedidos sin proveedor) con el cliente que los pidió ---
+    @GetMapping("/consolidados/{id}/missing")
+    public List<MissingItem> getMissing(@PathVariable Long id) {
+        List<Order> orders = consolidadoService.getOrdersByConsolidado(id);
+        // Solo pedidos ACEPTADOS (separados en adelante); pendientes y rechazados no cuentan.
+        java.util.Set<String> active = java.util.Set.of("SEPARADO", "PENDIENTE_RESTO", "PAGADO", "VERIFICADO");
+        java.util.Map<Long, MissingItem> map = new LinkedHashMap<>();
+        for (Order o : orders) {
+            if ("COMPRA TIENDA".equalsIgnoreCase(o.getClientName())) continue;
+            if ("STOCK".equalsIgnoreCase(o.getChannel())) continue; // los de stock ya los tienes
+            if (!active.contains(o.getPaymentStatus())) continue;
+            for (OrderItem it : o.getItems()) {
+                Product p = it.getProduct();
+                if (p == null) continue;
+                MissingItem mi = map.computeIfAbsent(p.getId(), k -> {
+                    MissingItem x = new MissingItem();
+                    x.setProductId(p.getId());
+                    x.setBrand(p.getBrand());
+                    x.setName(p.getName());
+                    x.setPriceUsd(p.getPriceUsd());
+                    x.setOrders(new java.util.ArrayList<>());
+                    return x;
+                });
+                MissingItem.OrderRef ref = new MissingItem.OrderRef();
+                ref.setOrderCode(o.getOrderCode());
+                ref.setClientName(o.getClientName());
+                ref.setClientPhone(o.getClientPhone());
+                ref.setQuantity(it.getQuantity());
+                mi.getOrders().add(ref);
+            }
+        }
+        // Solo los que NO tienen ninguna oferta en stock tras importar los Excel
+        List<MissingItem> result = new java.util.ArrayList<>();
+        for (MissingItem mi : map.values()) {
+            if (offerRepo.findByProduct_IdAndInStockTrue(mi.getProductId()).isEmpty()) {
+                result.add(mi);
+            }
+        }
+        return result;
+    }
+
+    // --- ERP: vendedores (para el filtro de la tabla de pedidos) ---
+    @GetMapping("/sellers")
+    public List<String> getSellers() {
+        return adminRepo.findAll().stream()
+                .map(Admin::getName)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    // --- ERP: resumen de operación del consolidado activo (KPIs + ganancia líquida) ---
+    @GetMapping("/operations")
+    public Map<String, Object> getOperations() {
+        Consolidado active = consolidadoService.getOrCreateActive();
+        List<Order> orders = consolidadoService.getOrdersByConsolidado(active.getId());
+        // Solo pedidos ACEPTADOS (separados en adelante); pendientes y rechazados no cuentan.
+        java.util.Set<String> accepted = java.util.Set.of("SEPARADO", "PENDIENTE_RESTO", "PAGADO", "VERIFICADO");
+        List<Order> client = orders.stream()
+                .filter(o -> !"COMPRA TIENDA".equalsIgnoreCase(o.getClientName()))
+                .filter(o -> !"STOCK".equalsIgnoreCase(o.getChannel()))
+                .filter(o -> accepted.contains(o.getPaymentStatus()))
+                .collect(Collectors.toList());
+
+        long lima = client.stream().filter(o -> "LIMA".equalsIgnoreCase(o.getDeliveryMethod())).count();
+        long provincia = client.stream().filter(o -> "PROVINCIA".equalsIgnoreCase(o.getDeliveryMethod())).count();
+        int units = client.stream().flatMap(o -> o.getItems().stream())
+                .mapToInt(i -> i.getQuantity() == null ? 0 : i.getQuantity()).sum();
+        double revenue = client.stream().mapToDouble(o -> o.getTotalPen() == null ? 0 : o.getTotalPen()).sum();
+        Map<String, Long> bySeller = client.stream().collect(Collectors.groupingBy(
+                o -> o.getAttendedBy() == null || o.getAttendedBy().isBlank() ? "Sin asignar" : o.getAttendedBy(),
+                Collectors.counting()));
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("consolidadoId", active.getId());
+        res.put("status", active.getStatus());
+        res.put("totalOrders", client.size());
+        res.put("lima", lima);
+        res.put("provincia", provincia);
+        res.put("units", units);
+        res.put("revenuePen", revenue);
+        res.put("gananciaLiquidaPen", active.getProjectedProfitPen());
+        res.put("bySeller", bySeller);
+        return res;
+    }
+
+    // --- ERP: ganancia total por periodo (mes/semana/año) — real ---
+    // stock (ventas retail) + promociones (packs aceptados) + consolidado (ENTREGADO y todo pagado).
+    @GetMapping("/profit-report")
+    public Map<String, Object> profitReport(@RequestParam(defaultValue = "month") String granularity) {
+        String gran = granularity == null ? "month" : granularity.toLowerCase();
+        java.util.Map<String, double[]> buckets = new java.util.TreeMap<>(); // [stock, promo, consolidado]
+
+        // 1) Stock: cada venta retail (fecha + ganancia reales)
+        for (org.example.backendbvaberiaperfumes.model.RetailSale s : retailSaleRepo.findAll()) {
+            double profit = s.getProfitPen() != null ? s.getProfitPen() : 0;
+            if (profit == 0) continue;
+            buckets.computeIfAbsent(periodKey(s.getSaleDate(), gran), x -> new double[3])[0] += profit;
+        }
+
+        java.util.Set<String> paid = java.util.Set.of("PAGADO", "VERIFICADO");
+        java.util.Set<String> active = java.util.Set.of("SEPARADO", "PENDIENTE_RESTO", "PAGADO", "VERIFICADO");
+
+        // 2) Promociones: pedidos STOCK aceptados (VERIFICADO) con líneas de promo
+        for (Order o : orderRepo.findAll()) {
+            if (!"STOCK".equalsIgnoreCase(o.getChannel())) continue;
+            if (!"VERIFICADO".equals(o.getPaymentStatus())) continue;
+            if (o.getPromos() == null || o.getPromos().isEmpty()) continue;
+            double promoProfit = 0;
+            for (org.example.backendbvaberiaperfumes.model.OrderPromo op : o.getPromos()) {
+                double unit = op.getProfitPen() != null ? op.getProfitPen() : 0;
+                int q = op.getQuantity() != null ? op.getQuantity() : 1;
+                promoProfit += unit * q;
+            }
+            if (promoProfit == 0) continue;
+            java.time.LocalDateTime when = o.getUpdatedAt() != null ? o.getUpdatedAt() : o.getCreatedAt();
+            buckets.computeIfAbsent(periodKey(when, gran), x -> new double[3])[1] += promoProfit;
+        }
+
+        // 3) Consolidado: lote ENTREGADO con todos sus pedidos de cliente pagados.
+        // Ganancia en vivo (precio − puesto en Perú): robusta y correcta aunque el valor guardado
+        // esté viejo. Fecha = entrega (deliveredAt) o, si falta (datos antiguos), la de cierre.
+        for (Consolidado c : consolidadoRepo.findAll()) {
+            if (!"ENTREGADO".equals(c.getStatus())) continue;
+            java.time.LocalDateTime when = c.getDeliveredAt() != null ? c.getDeliveredAt() : c.getCloseDate();
+            if (when == null) continue;
+            List<Order> clientOrders = orderRepo.findByConsolidado_Id(c.getId()).stream()
+                    .filter(o -> !"COMPRA TIENDA".equalsIgnoreCase(o.getClientName()))
+                    .filter(o -> !"STOCK".equalsIgnoreCase(o.getChannel()))
+                    .filter(o -> active.contains(o.getPaymentStatus()))
+                    .collect(Collectors.toList());
+            if (clientOrders.isEmpty()) continue;
+            if (!clientOrders.stream().allMatch(o -> paid.contains(o.getPaymentStatus()))) continue;
+            double profit = 0;
+            for (Order o : clientOrders) {
+                for (OrderItem it : o.getItems()) {
+                    Product p = it.getProduct();
+                    if (p == null) continue;
+                    double lp = pricingService.landedPen(
+                            p.getPriceUsd() != null ? p.getPriceUsd() : 0,
+                            p.getWeightG() != null ? p.getWeightG() : 0);
+                    profit += ((it.getUnitPricePen() != null ? it.getUnitPricePen() : 0) - lp)
+                            * (it.getQuantity() != null ? it.getQuantity() : 0);
+                }
+            }
+            buckets.computeIfAbsent(periodKey(when, gran), x -> new double[3])[2] += profit;
+        }
+
+        List<Map<String, Object>> periods = new java.util.ArrayList<>();
+        double tStock = 0, tPromo = 0, tCons = 0;
+        for (Map.Entry<String, double[]> e : buckets.entrySet()) {
+            double[] v = e.getValue();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("period", e.getKey());
+            row.put("stock", round2(v[0]));
+            row.put("promo", round2(v[1]));
+            row.put("consolidado", round2(v[2]));
+            row.put("total", round2(v[0] + v[1] + v[2]));
+            periods.add(row);
+            tStock += v[0]; tPromo += v[1]; tCons += v[2];
+        }
+
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("granularity", gran);
+        res.put("periods", periods);
+        Map<String, Object> totals = new LinkedHashMap<>();
+        totals.put("stock", round2(tStock));
+        totals.put("promo", round2(tPromo));
+        totals.put("consolidado", round2(tCons));
+        totals.put("total", round2(tStock + tPromo + tCons));
+        res.put("totals", totals);
+        return res;
+    }
+
+    private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
+
+    private String periodKey(java.time.LocalDateTime dt, String gran) {
+        if (dt == null) return "—";
+        if ("year".equals(gran)) return String.valueOf(dt.getYear());
+        if ("week".equals(gran)) {
+            int week = dt.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+            int wyear = dt.get(java.time.temporal.IsoFields.WEEK_BASED_YEAR);
+            return wyear + "-W" + String.format("%02d", week);
+        }
+        return dt.getYear() + "-" + String.format("%02d", dt.getMonthValue());
+    }
+
+    // --- ERP: lanzar perfumes a stock de tienda (precio = costo landed + S/35) ---
+    @PostMapping("/retail/launch")
+    public ResponseEntity<Map<String, Object>> launchToStock(@RequestBody List<Map<String, Object>> items) {
+        int launched = 0;
+        for (Map<String, Object> it : items) {
+            if (it.get("productId") == null) continue;
+            Long productId = ((Number) it.get("productId")).longValue();
+            int qty = it.get("quantity") != null ? ((Number) it.get("quantity")).intValue() : 1;
+            if (qty < 1) qty = 1;
+            Product p = productRepo.findById(productId).orElse(null);
+            if (p == null) continue;
+
+            int weightG = p.getWeightG() != null ? p.getWeightG() : 600;
+            double priceUsd = p.getPriceUsd() != null ? p.getPriceUsd() : 0.0;
+            double costPen = pricingService.landedPen(priceUsd, weightG); // costo puesto en Perú (con caja)
+
+            retailService.addStock(productId, qty, costPen, "Lanzado a tienda");
+            p.setStockPricePen(pricingService.suggestedStockPricePen(priceUsd, weightG));
+            if (!Boolean.TRUE.equals(p.getAvailable())) p.setAvailable(true);
+            productRepo.save(p);
+            launched++;
+        }
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("received", items.size());
+        res.put("launched", launched);
+        return ResponseEntity.ok(res);
+    }
+
+    // --- ERP: desglose de precio por producto (costo puesto en Perú + consolidado + stock) ---
+    @GetMapping("/products/pricing")
+    public List<Map<String, Object>> productsPricing() {
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (Product p : productRepo.findAll()) {
+            if (p.getPriceUsd() == null || p.getWeightG() == null) continue;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", p.getId());
+            m.put("landedPen", Math.round(pricingService.landedPen(p.getPriceUsd(), p.getWeightG()) * 100.0) / 100.0);
+            m.put("consolidadoPen", pricingService.suggestedPublicPricePen(p.getPriceUsd(), p.getWeightG()));
+            m.put("stockPen", pricingService.suggestedStockPricePen(p.getPriceUsd(), p.getWeightG()));
+            out.add(m);
+        }
+        return out;
     }
 
     @GetMapping("/dashboard")
@@ -71,7 +315,31 @@ public class AdminController {
                     return newConfig;
                 });
         config.setConfigValue(body.get("value"));
-        return ResponseEntity.ok(configRepo.save(config));
+        AppConfig saved = configRepo.save(config);
+        // Precios dinámicos: si cambia una clave de pricing, recalcular consolidado/stock
+        // de todos los productos no bloqueados (no debe quedar estático).
+        if (PRICING_KEYS.contains(key)) {
+            recomputeAllPrices();
+        }
+        return ResponseEntity.ok(saved);
+    }
+
+    private static final java.util.Set<String> PRICING_KEYS = java.util.Set.of(
+            "exchange_rate", "courier_cost_per_kg", "repack_cost_per_box",
+            "perfumes_per_box", "wholesale_profit_per_unit", "stock_extra_pen");
+
+    /** Recalcula el precio Consolidado y Stock de cada producto no bloqueado, con la fórmula única. */
+    private void recomputeAllPrices() {
+        List<Product> products = productRepo.findAll();
+        for (Product p : products) {
+            if (Boolean.TRUE.equals(p.getPriceLocked())) continue;
+            if (p.getPriceUsd() == null || p.getWeightG() == null) continue;
+            p.setWholesalePricePen(pricingService.suggestedPublicPricePen(p.getPriceUsd(), p.getWeightG()));
+            if (p.getStockPricePen() != null) {
+                p.setStockPricePen(pricingService.suggestedStockPricePen(p.getPriceUsd(), p.getWeightG()));
+            }
+        }
+        productRepo.saveAll(products);
     }
 
     // --- Stock Purchase (Compra para Tienda) ---

@@ -56,6 +56,14 @@ public class Product {
     @Column(name = "mayor_price_pen")
     private Double mayorPricePen;
 
+    /** Precio de venta inmediata cuando el perfume se "lanza" a stock de tienda (= costo landed + S/35). */
+    @Column(name = "stock_price_pen")
+    private Double stockPricePen;
+
+    /** Si true, el precio se editó manualmente y NO se recalcula al cambiar T/C o courier. */
+    @Column(name = "price_locked", nullable = false, columnDefinition = "boolean default false")
+    private Boolean priceLocked = false;
+
     @Column(length = 1000)
     private String description;
 
@@ -67,6 +75,45 @@ public class Product {
 
     @Column(name = "is_highlighted", nullable = false)
     private Boolean isHighlighted = false;
+
+    // --- Multi-proveedor ---
+    /** GTIN-14 canonico confiable. Null si el producto no tiene codigo confiable o es colision. */
+    @Column(name = "gtin")
+    private String gtin;
+
+    /** single | set | deo | oil */
+    @Column(name = "forma")
+    private String forma = "single";
+
+    /** Productos archivados (catalogo viejo de Crisfragance) no se muestran al cliente. */
+    @Column(name = "archived", nullable = false, columnDefinition = "boolean default false")
+    private Boolean archived = false;
+
+    /** true cuando el GTIN choca con otro producto distinto (codigo mal puesto por el proveedor). */
+    @Column(name = "gtin_conflict", nullable = false, columnDefinition = "boolean default false")
+    private Boolean gtinConflict = false;
+
+    // --- Notas olfativas (slugs canonicos unidos por coma; ver note-catalog.ts en el frontend) ---
+    @Column(name = "notes_top", length = 500)
+    private String notesTop;
+
+    @Column(name = "notes_middle", length = 500)
+    private String notesMiddle;
+
+    @Column(name = "notes_base", length = 500)
+    private String notesBase;
+
+    /** Familia olfativa dominante: citrico|floral|dulce|especiado|amaderado|ambar|aromatico|frutal|almizcle|cuero */
+    @Column(name = "olfactive_family", length = 40)
+    private String olfactiveFamily;
+
+    /** Ocasion sugerida (derivada de las notas): dia|noche|versatil */
+    @Column(name = "occasion", length = 20)
+    private String occasion;
+
+    /** Estaciones sugeridas, unidas por coma: primavera,verano,otono,invierno */
+    @Column(name = "seasons", length = 80)
+    private String seasons;
 
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
@@ -217,6 +264,22 @@ public class Product {
         this.mayorPricePen = mayorPricePen;
     }
 
+    public Double getStockPricePen() {
+        return stockPricePen;
+    }
+
+    public void setStockPricePen(Double stockPricePen) {
+        this.stockPricePen = stockPricePen;
+    }
+
+    public Boolean getPriceLocked() {
+        return priceLocked;
+    }
+
+    public void setPriceLocked(Boolean priceLocked) {
+        this.priceLocked = priceLocked;
+    }
+
     public String getDescription() {
         return description;
     }
@@ -247,6 +310,86 @@ public class Product {
 
     public void setIsHighlighted(Boolean isHighlighted) {
         this.isHighlighted = isHighlighted;
+    }
+
+    public String getGtin() {
+        return gtin;
+    }
+
+    public void setGtin(String gtin) {
+        this.gtin = gtin;
+    }
+
+    public String getForma() {
+        return forma;
+    }
+
+    public void setForma(String forma) {
+        this.forma = forma;
+    }
+
+    public Boolean getArchived() {
+        return archived;
+    }
+
+    public void setArchived(Boolean archived) {
+        this.archived = archived;
+    }
+
+    public Boolean getGtinConflict() {
+        return gtinConflict;
+    }
+
+    public void setGtinConflict(Boolean gtinConflict) {
+        this.gtinConflict = gtinConflict;
+    }
+
+    public String getNotesTop() {
+        return notesTop;
+    }
+
+    public void setNotesTop(String notesTop) {
+        this.notesTop = notesTop;
+    }
+
+    public String getNotesMiddle() {
+        return notesMiddle;
+    }
+
+    public void setNotesMiddle(String notesMiddle) {
+        this.notesMiddle = notesMiddle;
+    }
+
+    public String getNotesBase() {
+        return notesBase;
+    }
+
+    public void setNotesBase(String notesBase) {
+        this.notesBase = notesBase;
+    }
+
+    public String getOlfactiveFamily() {
+        return olfactiveFamily;
+    }
+
+    public void setOlfactiveFamily(String olfactiveFamily) {
+        this.olfactiveFamily = olfactiveFamily;
+    }
+
+    public String getOccasion() {
+        return occasion;
+    }
+
+    public void setOccasion(String occasion) {
+        this.occasion = occasion;
+    }
+
+    public String getSeasons() {
+        return seasons;
+    }
+
+    public void setSeasons(String seasons) {
+        this.seasons = seasons;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -42,9 +42,22 @@ public class Order {
     private String shippingDni;
     private String shippingPhone;
     private String shippingAddress;
+    private String shippingDepartment; // Departamento de destino (envío Shalom a provincia)
+    private String shippingAgency;     // Sede/agencia Shalom elegida
+
+    // --- Vendedor que gestiona el pedido (ERP) ---
+    private String attendedBy;       // nombre del admin que atendió
+    private Long attendedById;       // id del admin que atendió
+
+    /** Canal del pedido: CONSOLIDADO (por encargo) o STOCK (compra de stock de tienda). */
+    @Column(name = "channel")
+    private String channel = "CONSOLIDADO";
 
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> items = new ArrayList<>();
+
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<OrderPromo> promos = new ArrayList<>();
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -61,9 +74,13 @@ public class Order {
     protected void onUpdate() { updatedAt = LocalDateTime.now(); }
 
     public void recalculateTotal() {
-        this.totalPen = items.stream()
+        double itemsTotal = items.stream()
                 .mapToDouble(i -> i.getSubtotalPen() != null ? i.getSubtotalPen() : 0)
                 .sum();
+        double promosTotal = promos == null ? 0 : promos.stream()
+                .mapToDouble(p -> p.getSubtotalPen() != null ? p.getSubtotalPen() : 0)
+                .sum();
+        this.totalPen = itemsTotal + promosTotal;
     }
 
     // Getters y Setters
@@ -115,8 +132,26 @@ public class Order {
     public String getShippingAddress() { return shippingAddress; }
     public void setShippingAddress(String shippingAddress) { this.shippingAddress = shippingAddress; }
 
+    public String getShippingDepartment() { return shippingDepartment; }
+    public void setShippingDepartment(String shippingDepartment) { this.shippingDepartment = shippingDepartment; }
+
+    public String getShippingAgency() { return shippingAgency; }
+    public void setShippingAgency(String shippingAgency) { this.shippingAgency = shippingAgency; }
+
+    public String getAttendedBy() { return attendedBy; }
+    public void setAttendedBy(String attendedBy) { this.attendedBy = attendedBy; }
+
+    public Long getAttendedById() { return attendedById; }
+    public void setAttendedById(Long attendedById) { this.attendedById = attendedById; }
+
+    public String getChannel() { return channel; }
+    public void setChannel(String channel) { this.channel = channel; }
+
     public List<OrderItem> getItems() { return items; }
     public void setItems(List<OrderItem> items) { this.items = items; }
+
+    public List<OrderPromo> getPromos() { return promos; }
+    public void setPromos(List<OrderPromo> promos) { this.promos = promos; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

@@ -33,6 +33,10 @@ public class Consolidado {
     @Column(name = "close_date")
     private LocalDateTime closeDate;
 
+    /** Fecha en que el lote pasó a ENTREGADO. Usada para fechar la ganancia por periodo. */
+    @Column(name = "delivered_at")
+    private LocalDateTime deliveredAt;
+
     @Column(name = "total_weight_g", nullable = false)
     private Integer totalWeightG = 0;
 
@@ -127,6 +131,14 @@ public class Consolidado {
 
     public void setCloseDate(LocalDateTime closeDate) {
         this.closeDate = closeDate;
+    }
+
+    public LocalDateTime getDeliveredAt() {
+        return deliveredAt;
+    }
+
+    public void setDeliveredAt(LocalDateTime deliveredAt) {
+        this.deliveredAt = deliveredAt;
     }
 
     public Integer getTotalWeightG() {

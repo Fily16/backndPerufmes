@@ -26,6 +26,10 @@ public class OrderItem {
     private Double unitPricePen;
     private Double subtotalPen;
 
+    /** Picking: el admin marca que verificó/compró la mercadería de este ítem al llegar el lote. */
+    @Column(nullable = false, columnDefinition = "boolean default false")
+    private boolean picked = false;
+
     public OrderItem() {}
 
     public void calculateSubtotal() {
@@ -51,4 +55,7 @@ public class OrderItem {
 
     public Double getSubtotalPen() { return subtotalPen; }
     public void setSubtotalPen(Double subtotalPen) { this.subtotalPen = subtotalPen; }
+
+    public boolean isPicked() { return picked; }
+    public void setPicked(boolean picked) { this.picked = picked; }
 }

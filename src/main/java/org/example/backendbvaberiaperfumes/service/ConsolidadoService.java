@@ -16,6 +16,9 @@ public class ConsolidadoService {
     public static final String COMPRA_TIENDA = "COMPRA TIENDA";
 
     /** Statuses that count as "active" orders in the consolidado */
+    // Solo los pedidos ACEPTADOS (separados en adelante) cuentan para demanda, compra,
+    // KPIs y faltantes. Los pendientes de separación y los rechazados NO cuentan: el admin
+    // debe darle "Aceptar" a un pedido para que entre al consolidado.
     private static final Set<String> ACTIVE_STATUSES = Set.of(
             "SEPARADO", "PENDIENTE_RESTO", "PAGADO", "VERIFICADO"
     );
@@ -25,15 +28,17 @@ public class ConsolidadoService {
     private final ProductRepository productRepo;
     private final PricingService pricing;
     private final RetailService retailService;
+    private final PromotionRepository promotionRepo;
 
     public ConsolidadoService(ConsolidadoRepository consolidadoRepo, OrderRepository orderRepo,
                               ProductRepository productRepo, PricingService pricing,
-                              RetailService retailService) {
+                              RetailService retailService, PromotionRepository promotionRepo) {
         this.consolidadoRepo = consolidadoRepo;
         this.orderRepo = orderRepo;
         this.productRepo = productRepo;
         this.pricing = pricing;
         this.retailService = retailService;
+        this.promotionRepo = promotionRepo;
     }
 
     public Consolidado getOrCreateActive() {
@@ -105,11 +110,22 @@ public class ConsolidadoService {
         if (request.getShippingDni() != null) order.setShippingDni(request.getShippingDni());
         if (request.getShippingPhone() != null) order.setShippingPhone(request.getShippingPhone());
         if (request.getShippingAddress() != null) order.setShippingAddress(request.getShippingAddress());
+        if (request.getShippingDepartment() != null) order.setShippingDepartment(request.getShippingDepartment());
+        if (request.getShippingAgency() != null) order.setShippingAgency(request.getShippingAgency());
+
+        // Canal elegido por el CLIENTE (no inferido). El precio sale del canal, no se confía en el cliente.
+        // Un pedido que trae promociones (packs) es siempre canal STOCK.
+        boolean hasPromos = request.getPromotions() != null && !request.getPromotions().isEmpty();
+        String channel = (hasPromos || "STOCK".equalsIgnoreCase(request.getChannel())) ? "STOCK" : "CONSOLIDADO";
+        order.setChannel(channel);
 
         // 4. Agregar los nuevos productos (y fusionarlos si ya existen)
         int newUnitsAdded = 0; // Contamos solo lo nuevo que entra en este carrito
+        java.util.Map<Long, Integer> retailStock = retailService.getStockByProduct();
 
-        for (OrderRequest.OrderItemRequest itemReq : request.getItems()) {
+        List<OrderRequest.OrderItemRequest> itemReqs = request.getItems() != null
+                ? request.getItems() : new ArrayList<>();
+        for (OrderRequest.OrderItemRequest itemReq : itemReqs) {
             Product product = productRepo.findById(itemReq.getProductId())
                     .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
 
@@ -126,17 +142,26 @@ public class ConsolidadoService {
                 }
             }
 
-            double unitPrice = itemReq.getUnitPricePen() != null
-                    ? itemReq.getUnitPricePen()
-                    : (product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0);
+            // Precio por CANAL (el backend manda, no el cliente).
+            double unitPrice;
+            if ("STOCK".equals(channel)) {
+                if (product.getStockPricePen() == null) {
+                    throw new IllegalArgumentException(product.getBrand() + " " + product.getName() + " no está disponible en stock.");
+                }
+                Integer stockQty = retailStock.get(product.getId());
+                if (stockQty == null || stockQty < itemReq.getQuantity()) {
+                    throw new IllegalArgumentException("No hay stock suficiente de " + product.getBrand() + " " + product.getName() + ".");
+                }
+                unitPrice = product.getStockPricePen();
+            } else {
+                unitPrice = product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0;
+            }
 
             if (existingItem != null) {
-                // FUSIÓN: Sumamos la cantidad nueva a la anterior y actualizamos
                 existingItem.setQuantity(existingItem.getQuantity() + itemReq.getQuantity());
                 existingItem.setUnitPricePen(unitPrice);
                 existingItem.calculateSubtotal();
             } else {
-                // CREACIÓN: Es un perfume que no había pedido antes
                 OrderItem item = new OrderItem();
                 item.setOrder(order);
                 item.setProduct(product);
@@ -144,6 +169,30 @@ public class ConsolidadoService {
                 item.setUnitPricePen(unitPrice);
                 item.calculateSubtotal();
                 order.getItems().add(item);
+            }
+        }
+
+        // 4b. Agregar promociones (packs). Stock propio de la promo, independiente del retail.
+        if (hasPromos) {
+            for (OrderRequest.PromoLineRequest pl : request.getPromotions()) {
+                if (pl.getPromotionId() == null) continue;
+                Promotion promo = promotionRepo.findById(pl.getPromotionId())
+                        .orElseThrow(() -> new IllegalArgumentException("La promoción seleccionada ya no existe."));
+                int qty = pl.getQuantity() != null && pl.getQuantity() > 0 ? pl.getQuantity() : 1;
+                if (!Boolean.TRUE.equals(promo.getActive())
+                        || promo.getStockQty() == null || promo.getStockQty() < qty) {
+                    throw new IllegalArgumentException("La promoción \"" + promo.getName() + "\" ya no tiene stock suficiente.");
+                }
+                OrderPromo op = new OrderPromo();
+                op.setOrder(order);
+                op.setPromotionId(promo.getId());
+                op.setPromoName(promo.getName());
+                op.setUnitPricePen(promo.getPricePen());
+                op.setQuantity(qty);
+                op.setProfitPen(promo.getProfitPen());
+                op.calculateSubtotal();
+                order.getPromos().add(op);
+                newUnitsAdded += qty;
             }
         }
 
@@ -174,6 +223,34 @@ public class ConsolidadoService {
     public Order verifyDeposit(Long orderId, String yapeReference) {
         Order order = orderRepo.findById(orderId)
                 .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
+        boolean wasPending = "PENDIENTE_SEPARACION".equals(order.getPaymentStatus());
+
+        // Pedido de STOCK: aceptar = venta inmediata. Pasa a VERIFICADO, descuenta el
+        // stock de tienda y registra la ganancia (precio venta − costo). No es del consolidado.
+        if ("STOCK".equals(order.getChannel())) {
+            order.setPaymentStatus("VERIFICADO");
+            if (yapeReference != null && !yapeReference.isBlank()) order.setYapeReference(yapeReference);
+            Order saved = orderRepo.save(order);
+            if (wasPending) {
+                for (OrderItem it : order.getItems()) {
+                    try {
+                        retailService.registerSale(it.getProduct().getId(), it.getQuantity(),
+                                it.getUnitPricePen() != null ? it.getUnitPricePen() : 0, "TIENDA");
+                    } catch (Exception ignored) { /* sin stock suficiente: no bloquear la aceptación */ }
+                }
+                // Promociones: descontar el stock propio del pack (independiente del retail).
+                for (OrderPromo op : order.getPromos()) {
+                    if (op.getPromotionId() == null) continue;
+                    promotionRepo.findById(op.getPromotionId()).ifPresent(promo -> {
+                        int current = promo.getStockQty() != null ? promo.getStockQty() : 0;
+                        promo.setStockQty(Math.max(0, current - op.getQuantity()));
+                        promotionRepo.save(promo);
+                    });
+                }
+            }
+            return saved;
+        }
+
         order.setPaymentStatus("SEPARADO");
         order.setYapeReference(yapeReference);
         Order saved = orderRepo.save(order);
@@ -259,7 +336,10 @@ public class ConsolidadoService {
             }
         }
 
+        // Refrescar totales/ganancia con la fórmula actual antes de sellar la entrega.
+        recalculateConsolidado(consolidadoId);
         c.setStatus("ENTREGADO");
+        if (c.getDeliveredAt() == null) c.setDeliveredAt(LocalDateTime.now());
         return consolidadoRepo.save(c);
     }
 
@@ -281,6 +361,26 @@ public class ConsolidadoService {
     public Order getOrderByCode(String code) {
         return orderRepo.findByOrderCode(code)
                 .orElseThrow(() -> new RuntimeException("Pedido no encontrado con código: " + code));
+    }
+
+    /**
+     * Demanda agregada de CLIENTES (excluye COMPRA TIENDA) por producto, para el motor de asignacion.
+     * Solo cuenta pedidos en estados activos. Transaccional para inicializar los items (lazy).
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Integer> getActiveDemandByProduct(Long consolidadoId) {
+        Map<Long, Integer> demand = new LinkedHashMap<>();
+        for (Order order : orderRepo.findByConsolidado_Id(consolidadoId)) {
+            if (!ACTIVE_STATUSES.contains(order.getPaymentStatus())) continue;
+            if (COMPRA_TIENDA.equals(order.getClientName())) continue;
+            if ("STOCK".equals(order.getChannel())) continue; // los de stock ya los tienes
+            for (OrderItem item : order.getItems()) {
+                if (item.getProduct() != null) {
+                    demand.merge(item.getProduct().getId(), item.getQuantity(), Integer::sum);
+                }
+            }
+        }
+        return demand;
     }
 
     // --- Client self-edit order ---
@@ -356,36 +456,43 @@ public class ConsolidadoService {
         Consolidado c = getById(consolidadoId);
         List<Order> activeOrders = orderRepo.findByConsolidado_Id(consolidadoId).stream()
                 .filter(o -> ACTIVE_STATUSES.contains(o.getPaymentStatus()))
+                .filter(o -> !"STOCK".equals(o.getChannel()))          // los de stock no son del consolidado
+                .filter(o -> !COMPRA_TIENDA.equals(o.getClientName())) // compras internas tampoco son ingreso de cliente
                 .toList();
 
         int totalUnits = 0;
         int totalWeightG = 0;
         double subtotalProductsUsd = 0;
         double totalRevenuePen = 0;
+        double landedCostPen = 0; // costo puesto en Perú por unidad (misma fórmula única del precio)
 
         for (Order order : activeOrders) {
             for (OrderItem item : order.getItems()) {
                 int qty = item.getQuantity();
                 Product p = item.getProduct();
+                double priceUsd = p.getPriceUsd() != null ? p.getPriceUsd() : 0;
+                int weightG = p.getWeightG() != null ? p.getWeightG() : 0;
                 totalUnits += qty;
-                totalWeightG += (p.getWeightG() != null ? p.getWeightG() : 0) * qty;
-                subtotalProductsUsd += (p.getPriceUsd() != null ? p.getPriceUsd() : 0) * qty;
+                totalWeightG += weightG * qty;
+                subtotalProductsUsd += priceUsd * qty;
                 totalRevenuePen += item.getSubtotalPen() != null ? item.getSubtotalPen() : 0;
+                landedCostPen += pricing.landedPen(priceUsd, weightG) * qty;
             }
         }
 
+        // Ganancia = Σ (precio de venta − costo puesto en Perú) por unidad. Coincide con el +20/perfume
+        // del modelo de precios (Consolidado) y es ROBUSTA a cambios de T/C/courier: usa la misma
+        // fórmula única (PricingService.landedPen) que define el precio, no un courier agregado aparte.
         double courierCostUsd = totalUnits > 0
                 ? pricing.calculateTotalCourierCostUsd(totalWeightG, totalUnits) : 0;
-        double extraShipping = pricing.calculateExtraMiamiShipping(subtotalProductsUsd);
-        double investmentPen = pricing.calculateTotalInvestmentPen(subtotalProductsUsd, courierCostUsd, extraShipping);
-        double profitPen = totalRevenuePen - investmentPen;
+        double profitPen = totalRevenuePen - landedCostPen;
 
         c.setTotalWeightG(totalWeightG);
         c.setTotalCostUsd(subtotalProductsUsd);
         c.setCourierCostUsd(courierCostUsd);
-        c.setTotalInvestmentPen(investmentPen);
-        c.setTotalRevenuePen(totalRevenuePen);
-        c.setProjectedProfitPen(profitPen);
+        c.setTotalInvestmentPen(Math.round(landedCostPen * 100.0) / 100.0);
+        c.setTotalRevenuePen(Math.round(totalRevenuePen * 100.0) / 100.0);
+        c.setProjectedProfitPen(Math.round(profitPen * 100.0) / 100.0);
         consolidadoRepo.save(c);
     }
 
@@ -454,6 +561,7 @@ public class ConsolidadoService {
     public FullBreakdownResponse getFullBreakdown(Long consolidadoId) {
         List<Order> allOrders = orderRepo.findByConsolidado_Id(consolidadoId).stream()
                 .filter(o -> ACTIVE_STATUSES.contains(o.getPaymentStatus()))
+                .filter(o -> !"STOCK".equals(o.getChannel())) // los de stock no son del consolidado
                 .toList();
 
         List<OrderItem> clientItems = new ArrayList<>();

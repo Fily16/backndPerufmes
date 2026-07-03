@@ -51,6 +51,21 @@ public class PricingService {
         return getConfigDouble("deposit_per_unit", 20.0);
     }
 
+    // --- Modelo de costos nuevo (multi-proveedor) ---
+    public double getRepackCostPerBox() {
+        return getConfigDouble("repack_cost_per_box", 3.5);
+    }
+
+    /** Ganancia fija al publico por unidad, en soles. */
+    public double getProfitPerUnitPen() {
+        return getConfigDouble("wholesale_profit_per_unit", 15.0);
+    }
+
+    public double getRepackCostPerUnitUsd() {
+        int per = getPerfumesPerBox();
+        return per > 0 ? getRepackCostPerBox() / per : 0;
+    }
+
     // --- Excel formula: Catálogo Maestro col I (Costo Envío USD) ---
     // =IF(G4="","",(G4/1000)*Configuración!$B$5)
     public double calculateShippingCostUsd(int weightG) {
@@ -99,6 +114,32 @@ public class PricingService {
     // --- Suggested prices (Calculadora sheet) ---
     public double suggestedPrice(double costPen, double marginPercent) {
         return costPen * (1 + marginPercent / 100.0);
+    }
+
+    // --- Precio puesto en Peru y precio al publico (modelo nuevo) ---
+    /** Puesto en Peru por unidad (USD) = costo proveedor + courier(por peso) + reempaque por unidad. */
+    public double landedCostUsdPerUnit(double costUsd, int weightG) {
+        return costUsd + calculateShippingCostUsd(weightG) + getRepackCostPerUnitUsd();
+    }
+
+    /** Puesto en Peru por unidad en PEN (costo + courier + reempaque) × tipo de cambio. */
+    public double landedPen(double costUsd, int weightG) {
+        return landedCostUsdPerUnit(costUsd, weightG) * getExchangeRate();
+    }
+
+    /** Premio fijo (PEN) por venta inmediata desde stock de tienda. */
+    public double getStockExtraPen() {
+        return getConfigDouble("stock_extra_pen", 35.0);
+    }
+
+    /** Precio al publico (PEN) = puesto en Peru + ganancia fija por unidad. Redondea hacia ARRIBA. */
+    public double suggestedPublicPricePen(double costUsd, int weightG) {
+        return Math.ceil(landedPen(costUsd, weightG) + getProfitPerUnitPen());
+    }
+
+    /** Precio de venta inmediata (stock de tienda) = puesto en Peru + premio. Redondea hacia ARRIBA. */
+    public double suggestedStockPricePen(double costUsd, int weightG) {
+        return Math.ceil(landedPen(costUsd, weightG) + getStockExtraPen());
     }
 
     // --- Consolidado summary calculations ---

@@ -15,7 +15,7 @@ public class AppConfig {
     @Column(name = "config_key", unique = true, nullable = false)
     private String configKey;
 
-    @Column(name = "config_value", nullable = false)
+    @Column(name = "config_value", nullable = false, length = 8000)
     private String configValue;
 
     private String description;

@@ -39,8 +39,33 @@ public class ProductService {
         return productRepo.findByCategory(category);
     }
 
+    /**
+     * Busqueda flexible: tokeniza la consulta y exige que TODOS los tokens aparezcan
+     * en algun campo del producto (nombre, marca, SKU o codigo de barras GTIN/UPC).
+     * Asi "lattafa khamrah", un UPC pegado o un SKU encuentran el producto. Solo
+     * catalogo vigente (no archivado). El filtrado en memoria es suficiente para ~1.5k productos.
+     */
     public List<Product> search(String query) {
-        return productRepo.findByNameContainingIgnoreCaseOrBrandContainingIgnoreCase(query, query);
+        if (query == null || query.isBlank()) return List.of();
+        String[] tokens = query.toLowerCase().trim().split("\\s+");
+        return productRepo.findByArchivedFalse().stream()
+                .filter(p -> matchesAllTokens(p, tokens))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    private boolean matchesAllTokens(Product p, String[] tokens) {
+        String haystack = (
+                safe(p.getName()) + " " + safe(p.getBrand()) + " " +
+                safe(p.getSku()) + " " + safe(p.getGtin())
+        ).toLowerCase();
+        for (String t : tokens) {
+            if (!haystack.contains(t)) return false;
+        }
+        return true;
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s;
     }
 
     public Product save(Product product) {
@@ -62,5 +87,21 @@ public class ProductService {
     public void delete(Long id) {
         orderItemRepo.deleteByProductId(id);
         productRepo.deleteById(id);
+    }
+
+    /**
+     * Cutover no destructivo: archiva el catalogo viejo (productos sin ninguna oferta de proveedor).
+     * No borra -> los pedidos/ventas historicas siguen resolviendo. Idempotente y seguro
+     * sin importar si se corre antes o despues de importar (los nuevos tienen ofertas).
+     */
+    @Transactional
+    public int archiveLegacy() {
+        List<Product> legacy = productRepo.findActiveWithoutOffers();
+        for (Product p : legacy) {
+            p.setArchived(true);
+            p.setAvailable(false);
+        }
+        productRepo.saveAll(legacy);
+        return legacy.size();
     }
 }

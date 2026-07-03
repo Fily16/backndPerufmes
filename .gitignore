@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Secretos locales (no commitear) ###
+secret-mail.properties
+data/
