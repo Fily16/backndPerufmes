@@ -33,6 +33,10 @@ public class EmailService {
     @Value("${spring.mail.password:}")
     private String mailPassword;
 
+    /** API key de Resend (envío por HTTP, funciona en Render donde el SMTP está bloqueado). */
+    @Value("${resend.api.key:}")
+    private String resendApiKey;
+
     @Value("${app.notify.from:}")
     private String from;
 
@@ -48,37 +52,28 @@ public class EmailService {
     /** Diagnóstico: intenta enviar un correo de prueba y devuelve el resultado o el error exacto. */
     public java.util.Map<String, Object> diagnose(String to) {
         java.util.Map<String, Object> r = new java.util.LinkedHashMap<>();
+        r.put("method", method());
         r.put("user", mailUsername);
         r.put("from", (from == null || from.isBlank()) ? mailUsername : from);
-        r.put("passwordSet", mailPassword != null && !mailPassword.isBlank());
+        r.put("resendKeySet", resendEnabled());
+        r.put("smtpPasswordSet", smtpEnabled());
         r.put("recipients", notifyEmails);
-        if (mailPassword == null || mailPassword.isBlank()) {
-            r.put("result", "MAIL_PASSWORD vacío o no configurado");
+        if (!configured()) {
+            r.put("result", "Sin credenciales (configura RESEND_API_KEY o MAIL_PASSWORD)");
             return r;
         }
         String dest = (to != null && !to.isBlank()) ? to.trim() : mailUsername;
-        try {
-            MimeMessage msg = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(msg, true, "UTF-8");
-            helper.setFrom((from == null || from.isBlank()) ? mailUsername : from);
-            helper.setTo(dest);
-            helper.setSubject("Prueba de correo · AromaStudio");
-            helper.setText("<b>El envío de correos funciona.</b> Este es un mensaje de prueba.", true);
-            mailSender.send(msg);
-            r.put("result", "ENVIADO OK a " + dest);
-        } catch (Exception e) {
-            Throwable c = e; StringBuilder sb = new StringBuilder();
-            while (c != null) { sb.append(c.getClass().getSimpleName()).append(": ").append(c.getMessage()).append(" | "); c = c.getCause(); }
-            r.put("result", "ERROR -> " + sb);
-        }
+        String err = sendHtml("Prueba de correo · AromaStudio",
+                "<b>El envío de correos funciona.</b> Este es un mensaje de prueba.", new String[]{ dest });
+        r.put("result", err == null ? ("ENVIADO OK a " + dest) : ("ERROR -> " + err));
         return r;
     }
 
     @jakarta.annotation.PostConstruct
     void logConfig() {
-        boolean passwordSet = mailPassword != null && !mailPassword.isBlank();
-        System.out.println("[EmailService] Config correo -> user=" + mailUsername
-                + " passwordSet=" + passwordSet + " from=" + from + " to=" + notifyEmails);
+        System.out.println("[EmailService] Config correo -> metodo=" + method()
+                + " resendKey=" + resendEnabled() + " smtpPass=" + smtpEnabled()
+                + " from=" + from + " to=" + notifyEmails);
     }
 
     /** Dispara el correo en segundo plano para no bloquear la respuesta ni romper el flujo si falla. */
@@ -89,9 +84,16 @@ public class EmailService {
         }, "order-mail-" + orderId).start();
     }
 
+    private boolean resendEnabled() { return resendApiKey != null && !resendApiKey.isBlank(); }
+    private boolean smtpEnabled() {
+        return mailUsername != null && !mailUsername.isBlank() && mailPassword != null && !mailPassword.isBlank();
+    }
+    private boolean configured() { return resendEnabled() || smtpEnabled(); }
+    private String method() { return resendEnabled() ? "Resend/HTTP" : "SMTP"; }
+
     private void doSend(Long orderId) {
-        if (mailUsername == null || mailUsername.isBlank() || mailPassword == null || mailPassword.isBlank()) {
-            System.out.println("[EmailService] MAIL_PASSWORD no configurado; se omite el correo del pedido.");
+        if (!configured()) {
+            System.out.println("[EmailService] Sin credenciales (RESEND_API_KEY o MAIL_PASSWORD); se omite el correo.");
             return;
         }
         String[] recipients = Arrays.stream(notifyEmails.split(","))
@@ -105,17 +107,44 @@ public class EmailService {
         String subject = "Nuevo pedido · " + safe(order.getOrderCode()) + " · " + safe(order.getClientName());
         String html = buildHtml(order, items);
 
+        String err = sendHtml(subject, html, recipients);
+        if (err == null) System.out.println("[EmailService] Notificación enviada (" + method() + ") para " + order.getOrderCode());
+        else System.err.println("[EmailService] Error enviando correo: " + err);
+    }
+
+    /** Envía HTML a los destinatarios. Devuelve null si OK, o el mensaje de error.
+     *  Usa Resend (HTTP, funciona en Render) si hay API key; si no, SMTP (local). */
+    private String sendHtml(String subject, String html, String[] recipients) {
+        String fromAddr = (from == null || from.isBlank()) ? mailUsername : from;
+        if (resendEnabled()) {
+            try {
+                org.springframework.web.client.RestTemplate rest = new org.springframework.web.client.RestTemplate();
+                org.springframework.http.HttpHeaders h = new org.springframework.http.HttpHeaders();
+                h.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+                h.setBearerAuth(resendApiKey);
+                java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+                body.put("from", "AromaStudio <" + fromAddr + ">");
+                body.put("to", java.util.Arrays.asList(recipients));
+                body.put("subject", subject);
+                body.put("html", html);
+                rest.postForEntity("https://api.resend.com/emails",
+                        new org.springframework.http.HttpEntity<>(body, h), String.class);
+                return null;
+            } catch (Exception e) {
+                return "Resend: " + e.getMessage();
+            }
+        }
         try {
             MimeMessage msg = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(msg, true, "UTF-8");
-            helper.setFrom((from == null || from.isBlank()) ? mailUsername : from);
+            helper.setFrom(fromAddr);
             helper.setTo(recipients);
             helper.setSubject(subject);
             helper.setText(html, true);
             mailSender.send(msg);
-            System.out.println("[EmailService] Notificación de nuevo pedido enviada para " + order.getOrderCode());
+            return null;
         } catch (Exception e) {
-            System.err.println("[EmailService] Error enviando correo: " + e.getMessage());
+            return "SMTP: " + e.getMessage();
         }
     }
 
