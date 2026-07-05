@@ -36,6 +36,8 @@ public class DataSeederService implements CommandLineRunner {
     @Value("${app.migrate.h2:false}") private boolean migrating;
     @Value("${app.admin.email}") private String adminEmail;
     @Value("${app.admin.password}") private String adminPassword;
+    /** Admins extra por env: EXTRA_ADMINS=correo:clave:Nombre;correo2:clave2:Nombre2 */
+    @Value("${app.extra-admins:}") private String extraAdmins;
     @Value("${app.config.courier-cost-per-kg}") private String courierCost;
     @Value("${app.config.exchange-rate}") private String exchangeRate;
     @Value("${app.config.target-margin}") private String targetMargin;
@@ -145,6 +147,22 @@ public class DataSeederService implements CommandLineRunner {
         if (!adminRepo.existsByEmail(socioEmail)) {
             adminRepo.save(new Admin(socioEmail, passwordEncoder.encode("socio123"), "Socio"));
             System.out.println("Admin created: " + socioEmail + " (vendedor)");
+        }
+
+        // Admins extra desde la variable de entorno EXTRA_ADMINS
+        // Formato: correo:clave:Nombre;correo2:clave2:Nombre2  (el Nombre es opcional)
+        if (extraAdmins != null && !extraAdmins.isBlank()) {
+            for (String entry : extraAdmins.split(";")) {
+                String[] p = entry.trim().split(":", 3);
+                if (p.length < 2) continue;
+                String email = p[0].trim(), pass = p[1].trim();
+                String name = p.length >= 3 && !p[2].trim().isEmpty() ? p[2].trim() : "Administrador";
+                if (email.isEmpty() || pass.isEmpty()) continue;
+                if (!adminRepo.existsByEmail(email)) {
+                    adminRepo.save(new Admin(email, passwordEncoder.encode(pass), name));
+                    System.out.println("Admin extra creado: " + email);
+                }
+            }
         }
     }
 
