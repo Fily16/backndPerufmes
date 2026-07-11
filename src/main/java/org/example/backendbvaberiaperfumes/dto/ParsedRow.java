@@ -12,6 +12,7 @@ public class ParsedRow {
     public boolean inStock = true;
     public boolean flashSale = false;
     public String supplierSku;
+    public String imageUrl;    // foto elegida a mano / traida de Apify (solo para productos nuevos)
 
     public ParsedRow() {}
 

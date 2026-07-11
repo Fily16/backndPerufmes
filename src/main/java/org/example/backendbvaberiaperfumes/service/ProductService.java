@@ -80,6 +80,10 @@ public class ProductService {
         if (mayorPricePen != null) product.setMayorPricePen(mayorPricePen);
         if (priceUsd != null) product.setPriceUsd(priceUsd);
         if (weightG != null) product.setWeightG(weightG);
+        // Un precio editado a mano queda bloqueado: el recalculo automatico (import/proveedor) no lo pisa.
+        if (retailPricePen != null || wholesalePricePen != null || mayorPricePen != null) {
+            product.setPriceLocked(true);
+        }
         return productRepo.save(product);
     }
 

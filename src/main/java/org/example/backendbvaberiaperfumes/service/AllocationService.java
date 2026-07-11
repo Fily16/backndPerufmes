@@ -69,7 +69,7 @@ public class AllocationService {
         for (Map.Entry<Long, Integer> e : demand.entrySet()) {
             Long pid = e.getKey();
             int qty = e.getValue();
-            List<SupplierOffer> offers = offerRepo.findByProduct_IdAndInStockTrue(pid).stream()
+            List<SupplierOffer> offers = offerRepo.findByProduct_IdAndInStockTrueAndSupplier_ActiveTrue(pid).stream()
                     .filter(o -> o.getCostUsd() != null)
                     .collect(Collectors.toList());
             if (offers.isEmpty()) {

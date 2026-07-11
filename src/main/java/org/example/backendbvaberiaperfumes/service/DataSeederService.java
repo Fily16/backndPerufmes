@@ -126,6 +126,9 @@ public class DataSeederService implements CommandLineRunner {
     }
 
     private void seedSuppliers() {
+        // Bootstrap unico: solo siembra cuando NO existe ningun proveedor. Asi un proveedor
+        // eliminado permanentemente no reaparece en el proximo arranque.
+        if (supplierRepo.count() > 0) return;
         if (supplierRepo.findByName("Zimaxx").isEmpty()) {
             supplierRepo.save(new Supplier("Zimaxx", 2000.0, true));
             System.out.println("Supplier creado: Zimaxx (min $2000, prioridad)");

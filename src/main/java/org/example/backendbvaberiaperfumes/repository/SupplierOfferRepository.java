@@ -12,7 +12,15 @@ public interface SupplierOfferRepository extends JpaRepository<SupplierOffer, Lo
     List<SupplierOffer> findBySupplier_Id(Long supplierId);
     List<SupplierOffer> findByProduct_Id(Long productId);
     List<SupplierOffer> findByProduct_IdAndInStockTrue(Long productId);
+    /** Solo ofertas en stock de proveedores ACTIVOS (para precios y asignacion de compra). */
+    List<SupplierOffer> findByProduct_IdAndInStockTrueAndSupplier_ActiveTrue(Long productId);
     long countByInStockTrue();
+
+    /** IDs de productos que tienen oferta de este proveedor (para el ripple al desactivar/eliminar). */
+    @Query("select distinct o.product.id from SupplierOffer o where o.supplier.id = :supplierId")
+    List<Long> findProductIdsBySupplier(Long supplierId);
+
+    void deleteBySupplier_Id(Long supplierId);
 
     @Query("select distinct o.product.id from SupplierOffer o where o.inStock = true")
     List<Long> findInStockProductIds();

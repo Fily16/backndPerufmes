@@ -29,7 +29,7 @@ public class ProductMatchingService {
         p.setForma(row.forma);
         p.setCategory(categoryFromTitle(row.rawTitle));
         p.setWeightG(600);                 // peso por defecto; se ajusta despues
-        p.setImageUrl(null);               // imagen se carga despues por URL
+        p.setImageUrl(row.imageUrl);       // foto (de Apify o manual) si la hay; si no, null
         p.setPriceUsd(row.costUsd);        // referencia; el costo real vive en SupplierOffer
         p.setAvailable(true);
         p.setArchived(false);

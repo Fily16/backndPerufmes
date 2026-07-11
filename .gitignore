@@ -35,3 +35,4 @@ build/
 ### Secretos locales (no commitear) ###
 secret-mail.properties
 data/
+apify/
