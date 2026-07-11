@@ -2,6 +2,8 @@ package org.example.backendbvaberiaperfumes.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.example.backendbvaberiaperfumes.model.AppConfig;
+import org.example.backendbvaberiaperfumes.repository.AppConfigRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -51,10 +53,31 @@ public class ApifyImageService {
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(20)).build();
     private final ObjectMapper mapper = new ObjectMapper();
+    private final AppConfigRepository configRepo;
+
+    public ApifyImageService(AppConfigRepository configRepo) {
+        this.configRepo = configRepo;
+    }
+
+    /** Token efectivo: el de app_config (editable desde la UI) si existe; si no, el del env. */
+    private String effToken() {
+        String c = configRepo.findByConfigKey("apify_token").map(AppConfig::getConfigValue).orElse(null);
+        return (c != null && !c.isBlank()) ? c.trim() : token;
+    }
+
+    /** Resultados por perfume: el de app_config (editable desde la UI) si existe; si no, el del env. */
+    public int effectiveResults() {
+        return configRepo.findByConfigKey("apify_image_results").map(a -> {
+            try { return Math.max(1, Math.min(30, Integer.parseInt(a.getConfigValue().trim()))); }
+            catch (NumberFormatException e) { return resultsPerQuery; }
+        }).orElse(resultsPerQuery);
+    }
 
     public boolean configured() {
-        return token != null && !token.isBlank();
+        String t = effToken();
+        return t != null && !t.isBlank();
     }
+    public boolean hasToken() { return configured(); }
 
     /**
      * queriesByIdx: idx de fila -> texto de consulta ("marca nombre 100ml ... perfume").
@@ -70,11 +93,11 @@ public class ApifyImageService {
 
         Map<String, Object> input = new HashMap<>();
         input.put("queries", queries);
-        input.put("maxResultsPerQuery", Math.max(1, resultsPerQuery));
+        input.put("maxResultsPerQuery", effectiveResults());
         String body = mapper.writeValueAsString(input);
 
         String url = "https://api.apify.com/v2/acts/" + actor
-                + "/run-sync-get-dataset-items?token=" + token;
+                + "/run-sync-get-dataset-items?token=" + effToken();
         HttpRequest req = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(290))
                 .header("Content-Type", "application/json")
