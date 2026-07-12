@@ -44,7 +44,7 @@ public class ApifyController {
     @PostMapping("/images")
     public ResponseEntity<?> images(@RequestBody ImageSearchRequest req) {
         try {
-            Map<Integer, String> res = enrich.enrich(req != null ? req.items : null);
+            Map<Integer, String> res = enrich.enrich(req != null ? req.items : null, req != null ? req.source : null);
             return ResponseEntity.ok(res);
         } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));

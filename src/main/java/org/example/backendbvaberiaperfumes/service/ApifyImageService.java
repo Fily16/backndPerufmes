@@ -8,9 +8,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.time.Duration;
 import java.util.*;
@@ -31,6 +33,9 @@ public class ApifyImageService {
 
     @Value("${apify.image-actor:tnudF2IxzORPhg4r8}")
     private String actor;
+
+    @Value("${apify.fragrantica-actor:UOdNQyn82QjwAFUhc}")
+    private String fragranticaActor;
 
     /** Cuantos resultados traer por consulta (mas = mas acierto pero mas costo Apify). Configurable. */
     @Value("${apify.image-results:6}")
@@ -134,6 +139,89 @@ public class ApifyImageService {
             if (img != null) out.put(e.getKey(), img);
         }
         return out;
+    }
+
+    /**
+     * Busca en FRAGRANTICA por nombre (actor de búsqueda). Por cada consulta arma la URL
+     * https://www.fragrantica.com/search/?query=NOMBRE y toma el resultado cuyo nombre+marca
+     * mejor coincide (thumbnailUrl). Devuelve idx -> imageUrl.
+     */
+    public Map<Integer, String> fetchFragranticaImages(Map<Integer, String> queriesByIdx) throws Exception {
+        if (!configured()) {
+            throw new IllegalStateException("Falta configurar APIFY_TOKEN en las variables de entorno.");
+        }
+        if (queriesByIdx == null || queriesByIdx.isEmpty()) return Map.of();
+
+        // Consultas limpias + URLs de búsqueda únicas.
+        Map<Integer, Set<String>> tokensByIdx = new LinkedHashMap<>();
+        LinkedHashSet<String> urls = new LinkedHashSet<>();
+        for (Map.Entry<Integer, String> e : queriesByIdx.entrySet()) {
+            String clean = cleanForSearch(e.getValue());
+            if (clean.isBlank()) continue;
+            tokensByIdx.put(e.getKey(), tokensOf(clean));
+            urls.add("https://www.fragrantica.com/search/?query=" + URLEncoder.encode(clean, StandardCharsets.UTF_8));
+        }
+        if (urls.isEmpty()) return Map.of();
+
+        Map<String, Object> input = new HashMap<>();
+        input.put("urls", new ArrayList<>(urls));
+        input.put("maxitems", effectiveResults());
+        String body = mapper.writeValueAsString(input);
+
+        String url = "https://api.apify.com/v2/acts/" + fragranticaActor
+                + "/run-sync-get-dataset-items?token=" + effToken();
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(290))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+        if (resp.statusCode() >= 300) {
+            String b = resp.body();
+            throw new RuntimeException("Apify (Fragrantica) respondio " + resp.statusCode() + ": "
+                    + (b == null ? "" : b.substring(0, Math.min(300, b.length()))));
+        }
+
+        // Resultados: nombre+marca -> tokens, y su thumbnailUrl.
+        JsonNode arr = mapper.readTree(resp.body());
+        List<Object[]> results = new ArrayList<>();
+        if (arr.isArray()) {
+            for (JsonNode it : arr) {
+                String img = it.path("thumbnailUrl").asText(null);
+                if (img == null || img.isBlank()) img = it.path("imageUrl").asText(null);
+                if (img == null || img.isBlank()) continue;
+                Set<String> rt = tokensOf(it.path("brand").asText("") + " " + it.path("name").asText(""));
+                results.add(new Object[]{rt, img});
+            }
+        }
+
+        // Emparejar cada perfume con el resultado de mayor coincidencia de nombre.
+        Map<Integer, String> out = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Set<String>> e : tokensByIdx.entrySet()) {
+            Set<String> qt = e.getValue();
+            int need = Math.min(2, Math.max(1, qt.size()));
+            int bestScore = need - 1;
+            String bestImg = null;
+            for (Object[] r : results) {
+                @SuppressWarnings("unchecked")
+                Set<String> rt = (Set<String>) r[0];
+                int score = 0;
+                for (String t : qt) if (rt.contains(t)) score++;
+                if (score > bestScore) { bestScore = score; bestImg = (String) r[1]; }
+            }
+            if (bestImg != null) out.put(e.getKey(), bestImg);
+        }
+        return out;
+    }
+
+    /** Limpia una consulta para buscar en Fragrantica: quita "perfume", tamaño (ml/oz) y ruido. */
+    private String cleanForSearch(String q) {
+        if (q == null) return "";
+        String s = q.toLowerCase()
+                .replaceAll("(?i)\\b\\d+(\\.\\d+)?\\s*(ml|oz)\\b", " ")
+                .replaceAll("(?i)\\bperfume\\b", " ")
+                .replaceAll("\\s+", " ").trim();
+        return s;
     }
 
     /**

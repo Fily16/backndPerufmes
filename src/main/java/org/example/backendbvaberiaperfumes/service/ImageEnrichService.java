@@ -27,6 +27,11 @@ public class ImageEnrichService {
 
     @Transactional
     public Map<Integer, String> enrich(List<ImageSearchRequest.Item> items) throws Exception {
+        return enrich(items, null);
+    }
+
+    @Transactional
+    public Map<Integer, String> enrich(List<ImageSearchRequest.Item> items, String source) throws Exception {
         Map<Integer, String> result = new LinkedHashMap<>();
         if (items == null || items.isEmpty()) return result;
 
@@ -60,9 +65,11 @@ public class ImageEnrichService {
             }
         }
 
-        // 4. Llamar a Apify solo por lo que falta, y GUARDAR cada resultado en el caché.
+        // 4. Llamar a Apify solo por lo que falta (Google Images o Fragrantica), y GUARDAR en caché.
         if (!missQueries.isEmpty()) {
-            Map<Integer, String> fresh = apify.fetchImages(missQueries);
+            Map<Integer, String> fresh = "fragrantica".equalsIgnoreCase(source)
+                    ? apify.fetchFragranticaImages(missQueries)
+                    : apify.fetchImages(missQueries);
             for (Map.Entry<Integer, String> e : fresh.entrySet()) {
                 result.put(e.getKey(), e.getValue());
                 String key = keyByIdx.get(e.getKey());
