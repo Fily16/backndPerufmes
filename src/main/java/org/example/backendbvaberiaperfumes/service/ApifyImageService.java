@@ -41,6 +41,10 @@ public class ApifyImageService {
     @Value("${apify.image-results:6}")
     private int resultsPerQuery;
 
+    /** Cuantos perfumes por lote al rellenar fotos (una sola corrida del actor). Configurable. */
+    @Value("${apify.batch-size:10}")
+    private int batchSize;
+
     /** Palabras genericas de empaque/genero/relleno que NO cuentan como coincidencia de nombre. */
     private static final Set<String> STOP = Set.of(
             "perfume", "ml", "oz", "edt", "edp", "edc", "spray", "men", "women", "woman",
@@ -76,6 +80,14 @@ public class ApifyImageService {
             try { return Math.max(1, Math.min(30, Integer.parseInt(a.getConfigValue().trim()))); }
             catch (NumberFormatException e) { return resultsPerQuery; }
         }).orElse(resultsPerQuery);
+    }
+
+    /** Cuántos perfumes por lote (config editable desde la UI; si no, el del env). */
+    public int effectiveBatchSize() {
+        return configRepo.findByConfigKey("apify_batch_size").map(a -> {
+            try { return Math.max(1, Math.min(50, Integer.parseInt(a.getConfigValue().trim()))); }
+            catch (NumberFormatException e) { return batchSize; }
+        }).orElse(batchSize);
     }
 
     public boolean configured() {

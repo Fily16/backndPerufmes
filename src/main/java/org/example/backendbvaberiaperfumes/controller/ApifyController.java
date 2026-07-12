@@ -67,6 +67,7 @@ public class ApifyController {
     public Map<String, Object> getSettings() {
         Map<String, Object> m = new HashMap<>();
         m.put("results", apify.effectiveResults());
+        m.put("batch", apify.effectiveBatchSize());
         m.put("hasToken", apify.hasToken());
         return m;
     }
@@ -80,12 +81,19 @@ public class ApifyController {
                 if (r >= 1 && r <= 30) setConfig("apify_image_results", String.valueOf(r), "Resultados por perfume al buscar foto en Apify");
             } catch (NumberFormatException ignored) {}
         }
+        if (body.get("batch") != null) {
+            try {
+                int b = Integer.parseInt(String.valueOf(body.get("batch")).trim().replaceAll("[^0-9]", ""));
+                if (b >= 1 && b <= 50) setConfig("apify_batch_size", String.valueOf(b), "Perfumes por lote al rellenar fotos");
+            } catch (NumberFormatException ignored) {}
+        }
         if (body.get("token") != null) {
             String t = String.valueOf(body.get("token")).trim();
             if (!t.isBlank()) setConfig("apify_token", t, "Token de Apify (override del env; para cambiar de cuenta)");
         }
         Map<String, Object> m = new HashMap<>();
         m.put("results", apify.effectiveResults());
+        m.put("batch", apify.effectiveBatchSize());
         m.put("hasToken", apify.hasToken());
         m.put("message", "Ajustes de Apify guardados.");
         return ResponseEntity.ok(m);
