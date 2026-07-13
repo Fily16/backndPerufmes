@@ -289,6 +289,44 @@ public class ApifyImageService {
         return out;
     }
 
+    /**
+     * Detecta imagenes ROTAS: revisa cada URL por el proxy wsrv (en paralelo) y marca como rota
+     * si no carga (error / 404 / JSON) o si la imagen es diminuta (placeholder tipo "no permission").
+     * Conservador para NO marcar buenas como rotas: una foto real siempre pasa (>=1500 bytes, image/*).
+     */
+    public Set<Long> findBroken(Map<Long, String> idToUrl) {
+        Set<Long> broken = new LinkedHashSet<>();
+        if (idToUrl == null || idToUrl.isEmpty()) return broken;
+        List<Map.Entry<Long, String>> all = new ArrayList<>(idToUrl.entrySet());
+        int i = 0;
+        while (i < all.size()) {
+            List<Map.Entry<Long, String>> window = all.subList(i, Math.min(i + 40, all.size()));
+            Map<Long, CompletableFuture<HttpResponse<byte[]>>> futures = new LinkedHashMap<>();
+            for (Map.Entry<Long, String> e : window) {
+                String u = e.getValue();
+                if (u == null || u.isBlank()) { broken.add(e.getKey()); continue; }
+                String check = "https://images.weserv.nl/?url=" + URLEncoder.encode(u, StandardCharsets.UTF_8)
+                        + "&w=200&h=200&output=jpg";
+                HttpRequest req = HttpRequest.newBuilder(URI.create(check))
+                        .timeout(Duration.ofSeconds(20)).GET().build();
+                futures.put(e.getKey(), http.sendAsync(req, HttpResponse.BodyHandlers.ofByteArray()));
+            }
+            for (Map.Entry<Long, CompletableFuture<HttpResponse<byte[]>>> e : futures.entrySet()) {
+                try {
+                    HttpResponse<byte[]> resp = e.getValue().join();
+                    String ct = resp.headers().firstValue("content-type").orElse("");
+                    int len = resp.body() != null ? resp.body().length : 0;
+                    boolean ok = resp.statusCode() < 400 && ct.startsWith("image/") && len >= 1500;
+                    if (!ok) broken.add(e.getKey());
+                } catch (Exception ex) {
+                    broken.add(e.getKey());
+                }
+            }
+            i += 40;
+        }
+        return broken;
+    }
+
     /** Limpia una consulta para Bing: quita "perfume" y la unidad del tamaño (deja el numero). */
     private String cleanForBing(String q) {
         if (q == null) return "";

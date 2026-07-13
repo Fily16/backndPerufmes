@@ -27,11 +27,16 @@ public class ImageEnrichService {
 
     @Transactional
     public Map<Integer, String> enrich(List<ImageSearchRequest.Item> items) throws Exception {
-        return enrich(items, null);
+        return enrich(items, null, false);
     }
 
     @Transactional
     public Map<Integer, String> enrich(List<ImageSearchRequest.Item> items, String source) throws Exception {
+        return enrich(items, source, false);
+    }
+
+    @Transactional
+    public Map<Integer, String> enrich(List<ImageSearchRequest.Item> items, String source, boolean force) throws Exception {
         Map<Integer, String> result = new LinkedHashMap<>();
         if (items == null || items.isEmpty()) return result;
 
@@ -57,7 +62,7 @@ public class ImageEnrichService {
         Map<Integer, String> missQueries = new LinkedHashMap<>();
         for (ImageSearchRequest.Item it : items) {
             String key = keyByIdx.get(it.idx);
-            String hit = key != null ? cache.get(key) : null;
+            String hit = (!force && key != null) ? cache.get(key) : null;   // force = ignora el caché
             if (hit != null) {
                 result.put(it.idx, hit);
             } else if (it.query != null && !it.query.isBlank()) {

@@ -44,7 +44,10 @@ public class ApifyController {
     @PostMapping("/images")
     public ResponseEntity<?> images(@RequestBody ImageSearchRequest req) {
         try {
-            Map<Integer, String> res = enrich.enrich(req != null ? req.items : null, req != null ? req.source : null);
+            Map<Integer, String> res = enrich.enrich(
+                    req != null ? req.items : null,
+                    req != null ? req.source : null,
+                    req != null && req.force);
             return ResponseEntity.ok(res);
         } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
@@ -107,15 +110,41 @@ public class ApifyController {
         for (Product p : productRepo.findAllById(pids)) {
             boolean noImg = p.getImageUrl() == null || p.getImageUrl().isBlank();
             if (!noImg || Boolean.TRUE.equals(p.getArchived())) continue;
-            Map<String, Object> m = new HashMap<>();
-            m.put("id", p.getId());
-            m.put("brand", p.getBrand());
-            m.put("name", p.getName());
-            m.put("ml", p.getMl());
-            m.put("upc", p.getGtin());
-            out.add(m);
+            out.add(row(p));
         }
         return out;
+    }
+
+    /** Productos (de un proveedor) cuya foto está ROTA (no carga / placeholder), para re-buscarlas. */
+    @GetMapping("/broken")
+    public List<Map<String, Object>> broken(@RequestParam Long supplierId) {
+        Map<Long, String> withImg = new LinkedHashMap<>();
+        Map<Long, Product> byId = new LinkedHashMap<>();
+        for (Product p : productRepo.findAllById(offerRepo.findProductIdsBySupplier(supplierId))) {
+            if (Boolean.TRUE.equals(p.getArchived())) continue;
+            if (p.getImageUrl() != null && !p.getImageUrl().isBlank()) {
+                withImg.put(p.getId(), p.getImageUrl());
+                byId.put(p.getId(), p);
+            }
+        }
+        Set<Long> brokenIds = apify.findBroken(withImg);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Long id : brokenIds) {
+            Product p = byId.get(id);
+            if (p != null) out.add(row(p));
+        }
+        return out;
+    }
+
+    private Map<String, Object> row(Product p) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("id", p.getId());
+        m.put("brand", p.getBrand());
+        m.put("name", p.getName());
+        m.put("ml", p.getMl());
+        m.put("upc", p.getGtin());
+        m.put("imageUrl", p.getImageUrl());
+        return m;
     }
 
     private void setConfig(String key, String value, String desc) {
