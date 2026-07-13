@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Busca imagenes de perfumes con Apify (actor google-images-scraper), por NOMBRE.
@@ -36,6 +37,9 @@ public class ApifyImageService {
 
     @Value("${apify.fragrantica-actor:UOdNQyn82QjwAFUhc}")
     private String fragranticaActor;
+
+    @Value("${apify.bing-actor:CTnFA60HRTa9UHXl7}")
+    private String bingActor;
 
     /** Cuantos resultados traer por consulta (mas = mas acierto pero mas costo Apify). Configurable. */
     @Value("${apify.image-results:6}")
@@ -234,6 +238,63 @@ public class ApifyImageService {
                 .replaceAll("(?i)\\bperfume\\b", " ")
                 .replaceAll("\\s+", " ").trim();
         return s;
+    }
+
+    /**
+     * BING Images (actor HTTP, rapido). El actor recibe UN query por corrida, asi que se lanzan
+     * TODAS en paralelo (async) y se toma el primer resultado con imagen de cada una. Ultra rapido.
+     * Query = marca + nombre + ml (sin "perfume" ni la unidad), ej. "AURAA DESIRE DESERT DEW 100".
+     */
+    public Map<Integer, String> fetchBingImages(Map<Integer, String> queriesByIdx) throws Exception {
+        if (!configured()) {
+            throw new IllegalStateException("Falta configurar APIFY_TOKEN en las variables de entorno.");
+        }
+        if (queriesByIdx == null || queriesByIdx.isEmpty()) return Map.of();
+
+        int maxResults = Math.max(1, Math.min(5, effectiveResults()));
+        String base = "https://api.apify.com/v2/acts/" + bingActor
+                + "/run-sync-get-dataset-items?token=" + effToken();
+
+        // Lanzar todas las busquedas en paralelo.
+        Map<Integer, CompletableFuture<HttpResponse<String>>> futures = new LinkedHashMap<>();
+        for (Map.Entry<Integer, String> e : queriesByIdx.entrySet()) {
+            String q = cleanForBing(e.getValue());
+            if (q.isBlank()) continue;
+            Map<String, Object> input = new HashMap<>();
+            input.put("query", q);
+            input.put("maxResults", maxResults);
+            String body = mapper.writeValueAsString(input);
+            HttpRequest req = HttpRequest.newBuilder(URI.create(base))
+                    .timeout(Duration.ofSeconds(120))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+            futures.put(e.getKey(), http.sendAsync(req, HttpResponse.BodyHandlers.ofString()));
+        }
+
+        Map<Integer, String> out = new LinkedHashMap<>();
+        for (Map.Entry<Integer, CompletableFuture<HttpResponse<String>>> e : futures.entrySet()) {
+            try {
+                HttpResponse<String> resp = e.getValue().join();
+                if (resp.statusCode() >= 300) continue;
+                JsonNode arr = mapper.readTree(resp.body());
+                if (arr.isArray()) {
+                    for (JsonNode it : arr) {
+                        String img = it.path("imageUrl").asText(null);
+                        if (img != null && !img.isBlank()) { out.put(e.getKey(), img); break; }
+                    }
+                }
+            } catch (Exception ignored) { /* omite esa fila */ }
+        }
+        return out;
+    }
+
+    /** Limpia una consulta para Bing: quita "perfume" y la unidad del tamaño (deja el numero). */
+    private String cleanForBing(String q) {
+        if (q == null) return "";
+        return q.replaceAll("(?i)(\\d+(?:\\.\\d+)?)\\s*(ml|oz)\\b", "$1")
+                .replaceAll("(?i)\\bperfume\\b", " ")
+                .replaceAll("\\s+", " ").trim();
     }
 
     /**

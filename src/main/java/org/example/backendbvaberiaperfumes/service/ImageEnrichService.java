@@ -65,11 +65,12 @@ public class ImageEnrichService {
             }
         }
 
-        // 4. Llamar a Apify solo por lo que falta (Google Images o Fragrantica), y GUARDAR en caché.
+        // 4. Llamar a Apify solo por lo que falta (Bing / Fragrantica / Google Images), y GUARDAR en caché.
         if (!missQueries.isEmpty()) {
-            Map<Integer, String> fresh = "fragrantica".equalsIgnoreCase(source)
-                    ? apify.fetchFragranticaImages(missQueries)
-                    : apify.fetchImages(missQueries);
+            Map<Integer, String> fresh;
+            if ("bing".equalsIgnoreCase(source)) fresh = apify.fetchBingImages(missQueries);
+            else if ("fragrantica".equalsIgnoreCase(source)) fresh = apify.fetchFragranticaImages(missQueries);
+            else fresh = apify.fetchImages(missQueries);
             for (Map.Entry<Integer, String> e : fresh.entrySet()) {
                 result.put(e.getKey(), e.getValue());
                 String key = keyByIdx.get(e.getKey());
