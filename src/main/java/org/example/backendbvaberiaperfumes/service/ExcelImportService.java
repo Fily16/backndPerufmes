@@ -1,15 +1,21 @@
 package org.example.backendbvaberiaperfumes.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.backendbvaberiaperfumes.dto.ColumnMapping;
 import org.example.backendbvaberiaperfumes.dto.ImportPreview;
 import org.example.backendbvaberiaperfumes.dto.ImportSummary;
 import org.example.backendbvaberiaperfumes.dto.ParsedRow;
+import org.example.backendbvaberiaperfumes.model.MatchCandidate;
 import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.model.Supplier;
 import org.example.backendbvaberiaperfumes.model.SupplierOffer;
+import org.example.backendbvaberiaperfumes.repository.MatchCandidateRepository;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
+import org.example.backendbvaberiaperfumes.service.matching.FingerprintExtractor;
+import org.example.backendbvaberiaperfumes.service.matching.MatchingEngine;
+import org.example.backendbvaberiaperfumes.service.matching.ProductFingerprint;
 import org.example.backendbvaberiaperfumes.service.parser.GenericSupplierParser;
 import org.example.backendbvaberiaperfumes.service.parser.SupplierExcelParser;
 import org.example.backendbvaberiaperfumes.util.PerfumeNormalizer;
@@ -31,6 +37,10 @@ public class ExcelImportService {
     private final ProductRepository productRepo;
     private final ProductMatchingService matching;
     private final PricingService pricing;
+    private final MatchingEngine engine;
+    private final MatchCandidateRepository candidateRepo;
+    private final CostBasisService costBasis;
+    private final ObjectMapper json = new ObjectMapper();
 
     public ExcelImportService(List<SupplierExcelParser> parserList,
                               GenericSupplierParser genericParser,
@@ -38,7 +48,10 @@ public class ExcelImportService {
                               SupplierOfferRepository offerRepo,
                               ProductRepository productRepo,
                               ProductMatchingService matching,
-                              PricingService pricing) {
+                              PricingService pricing,
+                              MatchingEngine engine,
+                              MatchCandidateRepository candidateRepo,
+                              CostBasisService costBasis) {
         // Se registran los parsers afinados por nombre; el generico NO (es fallback).
         for (SupplierExcelParser p : parserList) {
             if (!GenericSupplierParser.SENTINEL.equals(p.supplierName())) {
@@ -51,6 +64,9 @@ public class ExcelImportService {
         this.productRepo = productRepo;
         this.matching = matching;
         this.pricing = pricing;
+        this.engine = engine;
+        this.candidateRepo = candidateRepo;
+        this.costBasis = costBasis;
     }
 
     // =====================================================================
@@ -62,22 +78,45 @@ public class ExcelImportService {
         public ColumnMapping mapping;         // null si se uso un parser afinado
         public List<String> headers = new ArrayList<>();
         public boolean generic;
+        public boolean layoutFallback;        // el parser afinado no reconocio el layout; se uso el generico
     }
 
     public ParsedData parse(Supplier supplier, byte[] bytes, ColumnMapping override) throws Exception {
         ParsedData pd = new ParsedData();
         SupplierExcelParser tuned = parsers.get(supplier.getName().toLowerCase());
-        if (tuned != null) {
-            pd.rows = tuned.parse(new ByteArrayInputStream(bytes));
-            pd.generic = false;
-        } else {
-            GenericSupplierParser.Detected d = genericParser.detect(bytes, override);
-            pd.rows = d.rows;
-            pd.mapping = d.mapping;
-            pd.headers = d.headers;
-            pd.generic = true;
+        if (tuned != null && override == null) {
+            try {
+                pd.rows = tuned.parse(new ByteArrayInputStream(bytes));
+                pd.generic = false;
+                return pd;
+            } catch (Exception layoutChanged) {
+                // El proveedor cambio el layout del Excel (caso real: Zimaxx viejo vs nuevo).
+                // Caer al parser generico en vez de rechazar el archivo.
+                pd.layoutFallback = true;
+            }
         }
+        // Sin override explicito, usar el perfil aprendido del proveedor (si existe).
+        ColumnMapping effective = override;
+        if (effective == null && supplier.getParserProfileJson() != null
+                && !supplier.getParserProfileJson().isBlank()) {
+            try {
+                effective = json.readValue(supplier.getParserProfileJson(), ColumnMapping.class);
+            } catch (Exception ignored) { /* perfil corrupto: autodetectar */ }
+        }
+        GenericSupplierParser.Detected d = genericParser.detect(bytes, effective);
+        pd.rows = d.rows;
+        pd.mapping = d.mapping;
+        pd.headers = d.headers;
+        pd.generic = true;
         return pd;
+    }
+
+    /** ¿El costo esta fuera del rango plausible? (typos del proveedor, ej. $2 por 200ml). */
+    private boolean isSuspicious(ParsedRow row) {
+        if (row.costUsd == null) return false;
+        double min = pricing.getMinPlausibleCostUsd();
+        double max = pricing.getMaxPlausibleCostUsd();
+        return row.costUsd < min || row.costUsd > max;
     }
 
     // =====================================================================
@@ -92,9 +131,12 @@ public class ExcelImportService {
         p.mapping = pd.mapping;
         p.headers = pd.headers;
         p.rowsRead = pd.rows.size();
+        p.layoutFallback = pd.layoutFallback;
 
         Set<String> collisions = collisionGtins(pd.rows);
         p.collisions = collisions.size();
+
+        MatchingEngine.Session session = engine.openSession();
 
         Set<String> seen = new HashSet<>();
         for (int i = 0; i < pd.rows.size(); i++) {
@@ -115,18 +157,44 @@ public class ExcelImportService {
             line.upc = row.gtin;
             line.costUsd = row.costUsd;
             line.inStock = row.inStock;
+            line.gtinStatus = row.gtinStatus;
+            line.suspicious = isSuspicious(row);
+            if (line.suspicious) p.suspiciousRows++;
 
-            // Resolver producto igual que en commit (por offerKey del proveedor, luego por GTIN).
+            // Resolver producto igual que en commit (offerKey del proveedor -> GTIN -> matching L2).
             SupplierOffer existing = offerRepo.findBySupplier_IdAndOfferKey(supplier.getId(), ok.key).orElse(null);
             Product match = null;
             if (existing != null) {
                 match = existing.getProduct();
+                line.matchLevel = "EXISTING";
                 p.updatedOffers++;
             } else if (ok.trusted) {
                 match = productRepo.findByGtin(row.gtin).orElse(null);
-                if (match == null) p.newProducts++;
-            } else {
+                if (match == null) {
+                    line.matchLevel = "NEW";
+                    p.newProducts++;
+                } else {
+                    line.matchLevel = "L1";
+                }
+            } else if (ok.conflict) {
+                line.matchLevel = "NEW";
                 p.newProducts++;
+            } else {
+                MatchingEngine.MatchOutcome outcome = session.resolve(row);
+                if (outcome.autoMatch != null) {
+                    match = outcome.autoMatch;
+                    line.matchLevel = "L2_AUTO";
+                    line.matchScore = 1.0;
+                    p.l2AutoMatched++;
+                } else if (!outcome.reviewCandidates.isEmpty()) {
+                    line.matchLevel = "L2_REVIEW";
+                    line.matchScore = outcome.reviewCandidates.get(0).score;
+                    p.reviewCandidates++;
+                    p.newProducts++;
+                } else {
+                    line.matchLevel = "NEW";
+                    p.newProducts++;
+                }
             }
 
             if (match != null) {
@@ -176,6 +244,11 @@ public class ExcelImportService {
 
     @Transactional
     public ImportSummary commit(Supplier supplier, List<ParsedRow> rows) {
+        return commit(supplier, rows, Set.of());
+    }
+
+    @Transactional
+    public ImportSummary commit(Supplier supplier, List<ParsedRow> rows, Set<Integer> approvedSuspiciousIdx) {
         Long supplierId = supplier.getId();
         ImportSummary summary = new ImportSummary();
         summary.setSupplierName(supplier.getName());
@@ -183,19 +256,37 @@ public class ExcelImportService {
 
         Set<String> collisions = collisionGtins(rows);
 
+        // Sesion de matching L2: catalogo indexado en memoria; los productos creados
+        // en este mismo commit se agregan para que filas posteriores los encuentren.
+        MatchingEngine.Session session = engine.openSession();
+
         Set<String> seenOfferKeys = new HashSet<>();
         Set<Long> touchedProducts = new HashSet<>();
+        Set<String> seenCandidatePairs = new HashSet<>();
         int created = 0, offersCreated = 0, offersUpdated = 0, trueDups = 0, noUpc = 0;
+        int l2Auto = 0, reviewQueued = 0, suspicious = 0;
 
-        for (ParsedRow row : rows) {
+        for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
+            ParsedRow row = rows.get(rowIdx);
             OfferKey ok = offerKey(row, collisions);
-            if (!row.hasGtin()) noUpc++;
 
             if (seenOfferKeys.contains(ok.key)) { trueDups++; continue; }
             seenOfferKeys.add(ok.key);
 
+            if (!row.hasGtin()) noUpc++;
+
+            // Costo fuera del rango plausible (typo probable, ej. $2 por 200ml): la oferta
+            // se guarda pero FUERA de stock, para que no toque precios ni la asignacion,
+            // salvo que el admin la haya aprobado explicitamente en el preview.
+            if (isSuspicious(row) && !approvedSuspiciousIdx.contains(rowIdx)) {
+                row.inStock = false;
+                suspicious++;
+            }
+
             SupplierOffer offer = offerRepo.findBySupplier_IdAndOfferKey(supplierId, ok.key).orElse(null);
             Product product;
+            MatchingEngine.MatchOutcome outcome = null; // solo filas nuevas sin GTIN confiable
+            boolean matchedByGtin = false;
             if (offer != null) {
                 product = offer.getProduct();
                 offersUpdated++;
@@ -204,13 +295,31 @@ public class ExcelImportService {
                     Optional<Product> existing = productRepo.findByGtin(row.gtin);
                     if (existing.isPresent()) {
                         product = existing.get();
+                        matchedByGtin = true;
                     } else {
                         product = matching.createProduct(row, row.gtin, false, supplier.getName());
                         created++;
+                        session.addProduct(product);
                     }
-                } else {
-                    product = matching.createProduct(row, null, ok.conflict, supplier.getName());
+                } else if (ok.conflict) {
+                    product = matching.createProduct(row, null, true, supplier.getName());
                     created++;
+                    session.addProduct(product);
+                } else {
+                    // Sin UPC confiable: matching por nombre (L2) contra el catalogo.
+                    outcome = session.resolve(row);
+                    if (outcome.autoMatch != null) {
+                        product = outcome.autoMatch;
+                        l2Auto++;
+                    } else {
+                        product = matching.createProduct(row, null, false, supplier.getName());
+                        created++;
+                        if (!outcome.reviewCandidates.isEmpty()) {
+                            product.setMatchPending(true);
+                            productRepo.save(product);
+                        }
+                        session.addProduct(product);
+                    }
                 }
                 offer = new SupplierOffer();
                 offer.setProduct(product);
@@ -220,6 +329,8 @@ public class ExcelImportService {
             }
 
             offer.setGtin(row.gtin);
+            offer.setGtinRaw(row.gtinRaw);
+            offer.setGtinStatus(row.gtinStatus);
             offer.setSupplierSku(row.supplierSku);
             offer.setCostUsd(row.costUsd);
             offer.setInStock(row.inStock);
@@ -228,6 +339,23 @@ public class ExcelImportService {
             offer.setLastImportedAt(LocalDateTime.now());
             offerRepo.save(offer);
             touchedProducts.add(product.getId());
+
+            // Cola de revision: candidatos probables (posible duplicado / typo de GTIN).
+            if (outcome != null && outcome.autoMatch == null && !outcome.reviewCandidates.isEmpty()) {
+                boolean any = false;
+                for (MatchingEngine.ReviewCandidate rc : outcome.reviewCandidates) {
+                    if (queueCandidate(rc.kind, product.getId(), rc.product.getId(),
+                            offer.getId(), rc.score, rc.reasons, seenCandidatePairs)) {
+                        any = true;
+                    }
+                }
+                if (any) reviewQueued++;
+            }
+
+            // Mismo GTIN pero atributos contradictorios entre proveedores (ej. 200ml vs 100ml).
+            if (matchedByGtin) {
+                queueAttrConflictIfNeeded(row, product, offer);
+            }
         }
 
         // Snapshot: ofertas de este proveedor que ya no vinieron en el Excel -> fuera de stock.
@@ -255,36 +383,96 @@ public class ExcelImportService {
         summary.setCollisions(collisions.size());
         summary.setNoUpcRows(noUpc);
         summary.setMarkedOutOfStock(outOfStock);
+        summary.setL2AutoMatched(l2Auto);
+        summary.setReviewQueued(reviewQueued);
+        summary.setSuspiciousRows(suspicious);
+        if (suspicious > 0) {
+            summary.addNote("Filas con costo fuera de rango guardadas FUERA de stock (aprobarlas desde el preview): " + suspicious);
+        }
         summary.addNote("Productos canonicos no archivados: " + productRepo.countByArchivedFalse());
         summary.addNote("Ofertas en stock (este proveedor): "
                 + offerRepo.findBySupplier_Id(supplierId).stream().filter(o -> Boolean.TRUE.equals(o.getInStock())).count());
         if (!collisions.isEmpty()) {
             summary.addNote("Colisiones de UPC detectadas y separadas (NO fusionadas): " + collisions.size());
         }
+        if (l2Auto > 0) {
+            summary.addNote("Filas sin UPC enganchadas por nombre a productos existentes: " + l2Auto);
+        }
+        if (reviewQueued > 0) {
+            summary.addNote("Posibles duplicados enviados a la cola de revision: " + reviewQueued);
+        }
         return summary;
     }
 
+    /** Crea un MatchCandidate si el par (source,target) no fue propuesto antes. */
+    private boolean queueCandidate(String kind, Long sourceId, Long targetId, Long offerId,
+                                   double score, List<String> reasons, Set<String> seenPairs) {
+        if (sourceId == null || targetId == null || sourceId.equals(targetId)) return false;
+        String pairKey = sourceId + ">" + targetId;
+        if (!seenPairs.add(pairKey)) return false;
+        if (candidateRepo.existsBySourceProductIdAndTargetProductId(sourceId, targetId)) return false;
+        MatchCandidate mc = new MatchCandidate();
+        mc.setKind(kind);
+        mc.setSourceProductId(sourceId);
+        mc.setTargetProductId(targetId);
+        mc.setSupplierOfferId(offerId);
+        mc.setScore(score);
+        mc.setReasonsJson(toJson(reasons));
+        candidateRepo.save(mc);
+        return true;
+    }
+
+    /** Mismo GTIN, atributos incompatibles (tamano). El GTIN manda, pero se avisa al admin. */
+    private void queueAttrConflictIfNeeded(ParsedRow row, Product product, SupplierOffer offer) {
+        if (row.ml == null || product.getMl() == null) return;
+        int tol = (int) Math.max(3, Math.max(row.ml, product.getMl()) * 0.03);
+        if (Math.abs(row.ml - product.getMl()) <= tol) return;
+        if (candidateRepo.existsBySupplierOfferIdAndKind(offer.getId(), "ATTR_CONFLICT")) return;
+        ProductFingerprint rowFp = FingerprintExtractor.fromRow(row);
+        MatchCandidate mc = new MatchCandidate();
+        mc.setKind("ATTR_CONFLICT");
+        mc.setTargetProductId(product.getId());
+        mc.setSupplierOfferId(offer.getId());
+        mc.setScore(0.0);
+        mc.setReasonsJson(toJson(List.of(
+                "mismo GTIN " + row.gtin + " pero tamano contradictorio: proveedor dice "
+                        + row.ml + "ml, catalogo tiene " + product.getMl() + "ml",
+                "huella del proveedor: " + rowFp)));
+        candidateRepo.save(mc);
+    }
+
+    private String toJson(List<String> reasons) {
+        try {
+            String s = json.writeValueAsString(reasons);
+            return s.length() > 1990 ? s.substring(0, 1990) : s;
+        } catch (Exception e) {
+            return "[]";
+        }
+    }
+
     /**
-     * Recalcula el precio de un producto desde la oferta ACTIVA en stock mas barata.
+     * Recalcula el precio de un producto desde sus ofertas activas en stock, con la
+     * estrategia de costo base configurada (CostBasisService; default: la mas barata).
      * Sin ofertas activas -> se oculta (available=false). Respeta priceLocked (edicion manual).
+     * Ademas RE-SINCRONIZA el legacy Product.priceUsd para que todos los lectores viejos
+     * (recalculo por config, ganancia de consolidado, compra de tienda) dejen de derivar.
      */
     public void recomputeProductPrice(Product p) {
-        List<SupplierOffer> offers = offerRepo.findByProduct_IdAndInStockTrueAndSupplier_ActiveTrue(p.getId()).stream()
-                .filter(o -> o.getCostUsd() != null)
-                .toList();
+        List<SupplierOffer> offers = costBasis.usableOffers(p.getId());
         if (offers.isEmpty()) {
             p.setAvailable(false);
             productRepo.save(p);
             return;
         }
-        double cheapest = offers.stream().mapToDouble(SupplierOffer::getCostUsd).min().orElse(0);
+        double basisCost = costBasis.basisCostUsd(offers);
         int weightG = p.getWeightG() != null ? p.getWeightG() : 600;
         p.setAvailable(true);
+        p.setPriceUsd(basisCost); // re-sync del costo legacy: una sola base de costo
         if (!Boolean.TRUE.equals(p.getPriceLocked())) {
-            double publicPen = pricing.suggestedPublicPricePen(cheapest, weightG);
+            double publicPen = pricing.suggestedPublicPricePen(basisCost, weightG);
             p.setWholesalePricePen(publicPen);
             if (p.getRetailPricePen() == null || p.getRetailPricePen() <= 0) p.setRetailPricePen(publicPen);
-            if (p.getStockPricePen() != null) p.setStockPricePen(pricing.suggestedStockPricePen(cheapest, weightG));
+            if (p.getStockPricePen() != null) p.setStockPricePen(pricing.suggestedStockPricePen(basisCost, weightG));
         }
         productRepo.save(p);
     }

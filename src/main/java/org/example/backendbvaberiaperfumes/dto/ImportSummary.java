@@ -14,6 +14,9 @@ public class ImportSummary {
     private int collisions;         // mismo UPC pero producto distinto -> separados
     private int noUpcRows;          // filas sin codigo de barras
     private int markedOutOfStock;   // ofertas que ya no vinieron en este Excel
+    private int l2AutoMatched;      // filas sin UPC enganchadas a producto existente por nombre
+    private int reviewQueued;       // candidatos enviados a la cola de revision del admin
+    private int suspiciousRows;     // filas con costo fuera de rango, guardadas fuera de stock
     private final List<String> notes = new ArrayList<>();
 
     public void addNote(String n) { notes.add(n); }
@@ -36,5 +39,11 @@ public class ImportSummary {
     public void setNoUpcRows(int v) { this.noUpcRows = v; }
     public int getMarkedOutOfStock() { return markedOutOfStock; }
     public void setMarkedOutOfStock(int v) { this.markedOutOfStock = v; }
+    public int getL2AutoMatched() { return l2AutoMatched; }
+    public void setL2AutoMatched(int v) { this.l2AutoMatched = v; }
+    public int getReviewQueued() { return reviewQueued; }
+    public void setReviewQueued(int v) { this.reviewQueued = v; }
+    public int getSuspiciousRows() { return suspiciousRows; }
+    public void setSuspiciousRows(int v) { this.suspiciousRows = v; }
     public List<String> getNotes() { return notes; }
 }

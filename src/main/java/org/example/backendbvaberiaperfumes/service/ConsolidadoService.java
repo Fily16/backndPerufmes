@@ -29,17 +29,24 @@ public class ConsolidadoService {
     private final PricingService pricing;
     private final RetailService retailService;
     private final PromotionRepository promotionRepo;
+    private final CostBasisService costBasis;
+    private final PurchasePlanRepository planRepo;
 
     public ConsolidadoService(ConsolidadoRepository consolidadoRepo, OrderRepository orderRepo,
                               ProductRepository productRepo, PricingService pricing,
-                              RetailService retailService, PromotionRepository promotionRepo) {
+                              RetailService retailService, PromotionRepository promotionRepo,
+                              CostBasisService costBasis, PurchasePlanRepository planRepo) {
         this.consolidadoRepo = consolidadoRepo;
         this.orderRepo = orderRepo;
         this.productRepo = productRepo;
         this.pricing = pricing;
         this.retailService = retailService;
         this.promotionRepo = promotionRepo;
+        this.costBasis = costBasis;
+        this.planRepo = planRepo;
     }
+
+    private static double nz(Double v) { return v != null ? v : 0; }
 
     public Consolidado getOrCreateActive() {
         return consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
@@ -160,6 +167,7 @@ public class ConsolidadoService {
             if (existingItem != null) {
                 existingItem.setQuantity(existingItem.getQuantity() + itemReq.getQuantity());
                 existingItem.setUnitPricePen(unitPrice);
+                snapshotCost(existingItem, product); // el precio se actualizo: el costo tambien
                 existingItem.calculateSubtotal();
             } else {
                 OrderItem item = new OrderItem();
@@ -167,6 +175,7 @@ public class ConsolidadoService {
                 item.setProduct(product);
                 item.setQuantity(itemReq.getQuantity());
                 item.setUnitPricePen(unitPrice);
+                snapshotCost(item, product);
                 item.calculateSubtotal();
                 order.getItems().add(item);
             }
@@ -383,6 +392,32 @@ public class ConsolidadoService {
         return demand;
     }
 
+    /**
+     * Precio unitario PEN promedio YA COBRADO por producto (desde los snapshots de los
+     * items activos). Es el ingreso real contra el que la asignacion mide el margen.
+     * Transaccional para inicializar los items (lazy).
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, Double> getActiveAvgPriceByProduct(Long consolidadoId) {
+        Map<Long, double[]> acc = new LinkedHashMap<>(); // pid -> [unidades, ingreso]
+        for (Order order : orderRepo.findByConsolidado_Id(consolidadoId)) {
+            if (!ACTIVE_STATUSES.contains(order.getPaymentStatus())) continue;
+            if (COMPRA_TIENDA.equals(order.getClientName())) continue;
+            if ("STOCK".equals(order.getChannel())) continue;
+            for (OrderItem item : order.getItems()) {
+                if (item.getProduct() == null || item.getSubtotalPen() == null) continue;
+                double[] a = acc.computeIfAbsent(item.getProduct().getId(), k -> new double[2]);
+                a[0] += item.getQuantity();
+                a[1] += item.getSubtotalPen();
+            }
+        }
+        Map<Long, Double> avg = new LinkedHashMap<>();
+        for (Map.Entry<Long, double[]> e : acc.entrySet()) {
+            if (e.getValue()[0] > 0) avg.put(e.getKey(), e.getValue()[1] / e.getValue()[0]);
+        }
+        return avg;
+    }
+
     // --- Client self-edit order ---
     @Transactional
     public Order editOrderByClient(String orderCode, String clientPhone,
@@ -451,6 +486,13 @@ public class ConsolidadoService {
         return saved;
     }
 
+    /** Congela costo y peso del producto en el item (misma base que definio su precio). */
+    private void snapshotCost(OrderItem item, Product product) {
+        Double costUsd = costBasis.basisCostUsdOrLegacy(product);
+        item.setUnitCostUsdSnapshot(costUsd);
+        item.setWeightGSnapshot(product.getWeightG() != null ? product.getWeightG() : 600);
+    }
+
     @Transactional
     public void recalculateConsolidado(Long consolidadoId) {
         Consolidado c = getById(consolidadoId);
@@ -466,12 +508,29 @@ public class ConsolidadoService {
         double totalRevenuePen = 0;
         double landedCostPen = 0; // costo puesto en Perú por unidad (misma fórmula única del precio)
 
+        // Con plan de compra CONFIRMADO, el costo por producto es el REAL decidido
+        // (proveedor elegido por el optimizador), no el asumido al publicar el precio.
+        Map<Long, Double> planCost = new HashMap<>();
+        planRepo.findFirstByConsolidadoIdAndStatusOrderByCreatedAtDesc(consolidadoId, "CONFIRMED")
+                .ifPresent(plan -> {
+                    for (PurchasePlanLine l : plan.getLines()) {
+                        if (l.getUnitCostUsd() != null) planCost.put(l.getProductId(), l.getUnitCostUsd());
+                    }
+                });
+
         for (Order order : activeOrders) {
             for (OrderItem item : order.getItems()) {
                 int qty = item.getQuantity();
                 Product p = item.getProduct();
-                double priceUsd = p.getPriceUsd() != null ? p.getPriceUsd() : 0;
-                int weightG = p.getWeightG() != null ? p.getWeightG() : 0;
+                // Costo: plan confirmado > snapshot del pedido > base de costo viva.
+                Double fromPlan = planCost.get(p.getId());
+                double priceUsd = fromPlan != null ? fromPlan
+                        : (item.getUnitCostUsdSnapshot() != null
+                            ? item.getUnitCostUsdSnapshot()
+                            : nz(costBasis.basisCostUsdOrLegacy(p)));
+                int weightG = item.getWeightGSnapshot() != null
+                        ? item.getWeightGSnapshot()
+                        : (p.getWeightG() != null ? p.getWeightG() : 0);
                 totalUnits += qty;
                 totalWeightG += weightG * qty;
                 subtotalProductsUsd += priceUsd * qty;
@@ -517,11 +576,12 @@ public class ConsolidadoService {
             item.setProduct(product);
             item.setQuantity(itemReq.getQuantity());
 
-            double landedCost = pricing.calculateLandedCostUsd(
-                    product.getPriceUsd() != null ? product.getPriceUsd() : 0,
+            double costUsd = nz(costBasis.basisCostUsdOrLegacy(product));
+            double landedCost = pricing.calculateLandedCostUsd(costUsd,
                     product.getWeightG() != null ? product.getWeightG() : 0);
             double costPen = pricing.calculateCostPen(landedCost);
             item.setUnitPricePen(Math.round(costPen * 100.0) / 100.0);
+            snapshotCost(item, product);
             item.calculateSubtotal();
             order.getItems().add(item);
         }
@@ -546,8 +606,8 @@ public class ConsolidadoService {
             OrderItem item = new OrderItem();
             item.setProduct(product);
             item.setQuantity(itemReq.getQuantity());
-            double landedCost = pricing.calculateLandedCostUsd(
-                    product.getPriceUsd() != null ? product.getPriceUsd() : 0,
+            double costUsd = nz(costBasis.basisCostUsdOrLegacy(product));
+            double landedCost = pricing.calculateLandedCostUsd(costUsd,
                     product.getWeightG() != null ? product.getWeightG() : 0);
             item.setUnitPricePen(Math.round(pricing.calculateCostPen(landedCost) * 100.0) / 100.0);
             item.calculateSubtotal();

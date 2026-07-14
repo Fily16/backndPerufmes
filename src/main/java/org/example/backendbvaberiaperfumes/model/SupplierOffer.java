@@ -32,8 +32,16 @@ public class SupplierOffer {
     @Column(name = "offer_key", nullable = false)
     private String offerKey;
 
-    /** GTIN-14 crudo del proveedor; null o compartido en colisiones. */
+    /** GTIN-14 canonico VALIDADO (checksum OK); null si el codigo es invalido o hay colision. */
     private String gtin;
+
+    /** Digitos crudos del codigo tal como vinieron del Excel (auditoria/cuarentena de typos). */
+    @Column(name = "gtin_raw")
+    private String gtinRaw;
+
+    /** OK | EMPTY | INVALID_LENGTH | CHECKSUM_FAIL | AMBIGUOUS (ver GtinCanonicalizer). */
+    @Column(name = "gtin_status", length = 20)
+    private String gtinStatus;
 
     private String supplierSku;
 
@@ -65,6 +73,10 @@ public class SupplierOffer {
     public void setOfferKey(String offerKey) { this.offerKey = offerKey; }
     public String getGtin() { return gtin; }
     public void setGtin(String gtin) { this.gtin = gtin; }
+    public String getGtinRaw() { return gtinRaw; }
+    public void setGtinRaw(String gtinRaw) { this.gtinRaw = gtinRaw; }
+    public String getGtinStatus() { return gtinStatus; }
+    public void setGtinStatus(String gtinStatus) { this.gtinStatus = gtinStatus; }
     public String getSupplierSku() { return supplierSku; }
     public void setSupplierSku(String supplierSku) { this.supplierSku = supplierSku; }
     public Double getCostUsd() { return costUsd; }

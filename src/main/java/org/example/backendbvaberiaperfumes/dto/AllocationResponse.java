@@ -17,6 +17,37 @@ public class AllocationResponse {
     public List<UnfulfillableItem> unfulfillable = new ArrayList<>();
     public List<String> notes = new ArrayList<>();
 
+    // --- v2: plan persistido, analisis forzar/saltar y guardia de margen ---
+    public Long planId;                                        // plan DRAFT creado (solo en /compute)
+    public List<SupplierDecision> skipAnalysis = new ArrayList<>();
+    public List<MarginWarning> marginWarnings = new ArrayList<>();
+    public List<LostSale> lostSales = new ArrayList<>();
+    public double penaltiesUsd;                                // relleno + ventas perdidas (contable)
+
+    public static class SupplierDecision {
+        public Long supplierId;
+        public String name;
+        public Double forceTotalUsd;   // costo total del mejor plan FORZANDO su minimo (null = inviable)
+        public Double skipTotalUsd;    // costo total del mejor plan SALTANDOLO
+        public String decision;        // FORZAR | SALTAR
+    }
+
+    public static class MarginWarning {
+        public Long productId;
+        public String name;
+        public Long supplierId;
+        public String supplierName;
+        public double marginPen;       // margen unitario resultante (PEN)
+        public double floorPen;        // piso configurado (min_margin_pen_per_unit)
+    }
+
+    public static class LostSale {
+        public Long productId;
+        public String name;
+        public int quantity;
+        public String reason;
+    }
+
     public static class SupplierAllocation {
         public Long supplierId;
         public String name;

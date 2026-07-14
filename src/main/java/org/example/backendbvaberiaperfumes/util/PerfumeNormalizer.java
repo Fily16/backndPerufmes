@@ -29,19 +29,13 @@ public final class PerfumeNormalizer {
     private static final Pattern OIL = Pattern.compile("\\b(oil|attar|cpo|extrait\\s*oil)\\b");
     private static final Pattern DEO = Pattern.compile("\\b(deo|deodorant|body\\s*spray|desodorante)\\b");
 
-    /** Devuelve solo digitos del codigo, normalizado a GTIN-14. Null si no parece un UPC/EAN valido. */
+    /**
+     * Devuelve el GTIN-14 canonico y VALIDADO (checksum GS1) del codigo, o null.
+     * Un codigo con checksum invalido (typo del proveedor) devuelve null: jamas
+     * define identidad de producto; la fila pasa por matching por nombre (L2).
+     */
     public static String gtin14(Object raw) {
-        if (raw == null) return null;
-        String s;
-        if (raw instanceof Number) {
-            // evita notacion cientifica para numeros grandes
-            s = new java.math.BigDecimal(raw.toString()).toBigInteger().toString();
-        } else {
-            s = raw.toString();
-        }
-        String digits = s.replaceAll("\\D", "");
-        if (digits.length() < 11 || digits.length() > 14) return null;
-        return String.format("%14s", digits).replace(' ', '0');
+        return GtinCanonicalizer.canonicalize(raw).canonical14;
     }
 
     public static String stripAccents(String s) {

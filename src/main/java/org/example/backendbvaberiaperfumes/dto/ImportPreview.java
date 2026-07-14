@@ -22,6 +22,10 @@ public class ImportPreview {
     public int outOfStock;
     public int priceDrops;
     public int priceRises;
+    public int l2AutoMatched;      // filas sin UPC enganchadas a un producto existente por nombre (seguro)
+    public int reviewCandidates;   // filas que iran a la cola de revision al publicar
+    public int suspiciousRows;     // filas con costo fuera del rango plausible (typo probable)
+    public boolean layoutFallback; // el parser afinado no reconocio el layout; se uso el generico
 
     public List<Line> rows = new ArrayList<>();
 
@@ -46,5 +50,10 @@ public class ImportPreview {
 
         public Double currentPricePen;  // precio publico actual (si existe)
         public Double newPricePen;      // precio publico que quedaria tras publicar
+
+        public String matchLevel;       // L1 | L2_AUTO | L2_REVIEW | NEW | EXISTING
+        public Double matchScore;       // similitud del mejor candidato (si aplica)
+        public String gtinStatus;       // OK | EMPTY | INVALID_LENGTH | CHECKSUM_FAIL | AMBIGUOUS
+        public boolean suspicious;      // costo fuera del rango plausible: no repreciara salvo aprobacion
     }
 }

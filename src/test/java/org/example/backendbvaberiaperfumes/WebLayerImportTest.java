@@ -69,11 +69,13 @@ class WebLayerImportTest {
         assertEquals(985, sum.get("rowsRead").asInt());
         assertEquals(985, sum.get("offersCreated").asInt());
 
-        // 4. catalogo publico (sin auth) con inStockOnly -> solo los importados con stock
+        // 4. catalogo publico (sin auth) con inStockOnly -> solo los importados con stock.
+        // 984 y no 985: el "Mini Moschino 0.17 Oz" a $3 cae en la cuarentena de precios
+        // (min_plausible_cost_usd=4) y queda fuera de stock hasta aprobarlo en el preview.
         String prods = mvc.perform(get("/api/products").param("inStockOnly", "true"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        assertEquals(985, om.readTree(prods).size(), "Solo los 985 de Zimaxx tienen oferta en stock");
+        assertEquals(984, om.readTree(prods).size(), "984 en stock (1 sospechosa en cuarentena de precio)");
 
         // 5. asignacion (admin) -> 200 y JSON valido
         String activeBody = mvc.perform(get("/api/consolidados/active"))

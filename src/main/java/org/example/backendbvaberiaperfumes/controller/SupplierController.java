@@ -4,6 +4,8 @@ import org.example.backendbvaberiaperfumes.dto.ImportPreview;
 import org.example.backendbvaberiaperfumes.dto.ImportSummary;
 import org.example.backendbvaberiaperfumes.dto.SupplierRequest;
 import org.example.backendbvaberiaperfumes.model.Supplier;
+import org.example.backendbvaberiaperfumes.model.SupplierConstraint;
+import org.example.backendbvaberiaperfumes.repository.SupplierConstraintRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
 import org.example.backendbvaberiaperfumes.service.ExcelImportService;
 import org.example.backendbvaberiaperfumes.service.ImportBatchService;
@@ -25,13 +27,16 @@ public class SupplierController {
     private final SupplierService supplierService;
     private final ImportBatchService batchService;
     private final ExcelImportService importService;
+    private final SupplierConstraintRepository constraintRepo;
 
     public SupplierController(SupplierRepository supplierRepo, SupplierService supplierService,
-                              ImportBatchService batchService, ExcelImportService importService) {
+                              ImportBatchService batchService, ExcelImportService importService,
+                              SupplierConstraintRepository constraintRepo) {
         this.supplierRepo = supplierRepo;
         this.supplierService = supplierService;
         this.batchService = batchService;
         this.importService = importService;
+        this.constraintRepo = constraintRepo;
     }
 
     @GetMapping
@@ -78,6 +83,50 @@ public class SupplierController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
+    }
+
+    // --- Restricciones de compra del proveedor (minimos como datos) ---
+
+    @GetMapping("/{id}/constraints")
+    public List<SupplierConstraint> constraints(@PathVariable Long id) {
+        return constraintRepo.findBySupplier_Id(id);
+    }
+
+    @PostMapping("/{id}/constraints")
+    public ResponseEntity<?> addConstraint(@PathVariable Long id, @RequestBody SupplierConstraint body) {
+        Supplier s = supplierRepo.findById(id).orElse(null);
+        if (s == null) return ResponseEntity.badRequest().body(Map.of("message", "Proveedor no existe"));
+        if (body.getType() == null || body.getValueNum() == null) {
+            return ResponseEntity.badRequest().body(Map.of("message", "type y valueNum son obligatorios"));
+        }
+        SupplierConstraint c = new SupplierConstraint(s, body.getType().toUpperCase(), body.getValueNum());
+        c.setScopeJson(body.getScopeJson());
+        c.setActive(body.getActive() == null || body.getActive());
+        return ResponseEntity.ok(constraintRepo.save(c));
+    }
+
+    @PutMapping("/{id}/constraints/{constraintId}")
+    public ResponseEntity<?> updateConstraint(@PathVariable Long id, @PathVariable Long constraintId,
+                                              @RequestBody SupplierConstraint body) {
+        SupplierConstraint c = constraintRepo.findById(constraintId).orElse(null);
+        if (c == null || !c.getSupplier().getId().equals(id)) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Restriccion no existe para este proveedor"));
+        }
+        if (body.getType() != null) c.setType(body.getType().toUpperCase());
+        if (body.getValueNum() != null) c.setValueNum(body.getValueNum());
+        if (body.getScopeJson() != null) c.setScopeJson(body.getScopeJson());
+        if (body.getActive() != null) c.setActive(body.getActive());
+        return ResponseEntity.ok(constraintRepo.save(c));
+    }
+
+    @DeleteMapping("/{id}/constraints/{constraintId}")
+    public ResponseEntity<?> deleteConstraint(@PathVariable Long id, @PathVariable Long constraintId) {
+        SupplierConstraint c = constraintRepo.findById(constraintId).orElse(null);
+        if (c == null || !c.getSupplier().getId().equals(id)) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Restriccion no existe para este proveedor"));
+        }
+        constraintRepo.delete(c);
+        return ResponseEntity.ok(Map.of("message", "Restriccion eliminada"));
     }
 
     /** Vista previa (NO publica): sube el Excel, lo parsea y devuelve el detalle + batchId. */

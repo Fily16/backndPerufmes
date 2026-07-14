@@ -61,7 +61,7 @@ public class MagnetParser extends AbstractSupplierParser {
                 }
 
                 ParsedRow pr = new ParsedRow();
-                pr.gtin = PerfumeNormalizer.gtin14(skuRaw);
+                applyGtin(pr, skuRaw);
                 pr.brand = currentBrand;
                 pr.rawTitle = desc;
                 pr.name = PerfumeNormalizer.cleanName(PerfumeNormalizer.stripBrandPrefix(currentBrand, desc));

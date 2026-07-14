@@ -3,6 +3,8 @@ package org.example.backendbvaberiaperfumes.service;
 import org.example.backendbvaberiaperfumes.dto.ParsedRow;
 import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
+import org.example.backendbvaberiaperfumes.service.matching.FingerprintExtractor;
+import org.example.backendbvaberiaperfumes.service.matching.ProductFingerprint;
 import org.example.backendbvaberiaperfumes.util.PerfumeNormalizer;
 import org.springframework.stereotype.Service;
 
@@ -27,6 +29,7 @@ public class ProductMatchingService {
         p.setName(row.name != null && !row.name.isBlank() ? row.name : row.rawTitle);
         p.setMl(row.ml);
         p.setForma(row.forma);
+        p.setType(typeFromRow(row));       // conserva genero+concentracion (el nombre limpio los pierde)
         p.setCategory(categoryFromTitle(row.rawTitle));
         p.setWeightG(600);                 // peso por defecto; se ajusta despues
         p.setImageUrl(row.imageUrl);       // foto (de Apify o manual) si la hay; si no, null
@@ -40,6 +43,20 @@ public class ProductMatchingService {
 
     public boolean sameProduct(ParsedRow a, ParsedRow b) {
         return PerfumeNormalizer.sameProduct(a.brand, a.name, a.ml, b.brand, b.name, b.ml);
+    }
+
+    /** "Women EDP", "Unisex EDT"... desde el titulo crudo; el matching futuro lo aprovecha. */
+    private String typeFromRow(ParsedRow row) {
+        ProductFingerprint fp = FingerprintExtractor.fromRow(row);
+        StringBuilder sb = new StringBuilder();
+        if (fp.gender != null) {
+            sb.append(Character.toUpperCase(fp.gender.charAt(0))).append(fp.gender.substring(1));
+        }
+        if (fp.concentration != null) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(fp.concentration.toUpperCase());
+        }
+        return sb.length() > 0 ? sb.toString() : null;
     }
 
     private String categoryFromTitle(String title) {

@@ -9,6 +9,7 @@ import org.example.backendbvaberiaperfumes.model.OrderItem;
 import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.repository.*;
 import org.example.backendbvaberiaperfumes.service.ConsolidadoService;
+import org.example.backendbvaberiaperfumes.service.CostBasisService;
 import org.example.backendbvaberiaperfumes.service.PricingService;
 import org.example.backendbvaberiaperfumes.service.RetailService;
 import org.springframework.http.*;
@@ -32,11 +33,12 @@ public class AdminController {
     private final RetailService retailService;
     private final PricingService pricingService;
     private final ConsolidadoService consolidadoService;
+    private final CostBasisService costBasisService;
 
     public AdminController(ProductRepository productRepo, ConsolidadoRepository consolidadoRepo,
                            OrderRepository orderRepo, AppConfigRepository configRepo,
                            RetailService retailService, PricingService pricingService,
-                           ConsolidadoService consolidadoService) {
+                           ConsolidadoService consolidadoService, CostBasisService costBasisService) {
         this.productRepo = productRepo;
         this.consolidadoRepo = consolidadoRepo;
         this.orderRepo = orderRepo;
@@ -44,6 +46,7 @@ public class AdminController {
         this.retailService = retailService;
         this.pricingService = pricingService;
         this.consolidadoService = consolidadoService;
+        this.costBasisService = costBasisService;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -267,6 +270,52 @@ public class AdminController {
         return ResponseEntity.ok(res);
     }
 
+    /**
+     * Ofertas de TODOS los proveedores para un producto + cual define el precio publicado.
+     * Para la vista multi-proveedor del admin (comparar costos, ver estado del GTIN).
+     */
+    @GetMapping("/products/{id}/offers")
+    public ResponseEntity<Map<String, Object>> productOffers(@PathVariable Long id) {
+        Product p = productRepo.findById(id).orElse(null);
+        if (p == null) return ResponseEntity.notFound().build();
+        var offers = offerRepo.findByProduct_Id(id);
+        var usable = costBasisService.usableOffers(id);
+        Double basis = costBasisService.basisCostUsd(usable);
+        Double cheapest = usable.stream()
+                .map(o -> o.getCostUsd()).filter(Objects::nonNull)
+                .min(Double::compare).orElse(null);
+
+        List<Map<String, Object>> list = new java.util.ArrayList<>();
+        for (var o : offers) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("offerId", o.getId());
+            m.put("supplierId", o.getSupplierId());
+            m.put("supplierName", o.getSupplier() != null ? o.getSupplier().getName() : null);
+            m.put("supplierActive", o.getSupplier() != null && Boolean.TRUE.equals(o.getSupplier().getActive()));
+            m.put("costUsd", o.getCostUsd());
+            m.put("inStock", o.getInStock());
+            m.put("flashSale", o.getFlashSale());
+            m.put("gtin", o.getGtin());
+            m.put("gtinStatus", o.getGtinStatus());
+            m.put("rawTitle", o.getRawTitle());
+            m.put("lastImportedAt", o.getLastImportedAt());
+            m.put("isBasis", basis != null && o.getCostUsd() != null
+                    && usable.stream().anyMatch(u -> u.getId().equals(o.getId()))
+                    && Math.abs(o.getCostUsd() - basis) < 0.001);
+            list.add(m);
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("productId", p.getId());
+        out.put("gtin", p.getGtin());
+        out.put("gtinConflict", p.getGtinConflict());
+        out.put("matchPending", p.getMatchPending());
+        out.put("basisCostUsd", basis);
+        out.put("cheapestCostUsd", cheapest);
+        out.put("pricingBasis", pricingService.getPricingBasis());
+        out.put("offers", list);
+        return ResponseEntity.ok(out);
+    }
+
     // --- ERP: desglose de precio por producto (costo puesto en Perú + consolidado + stock) ---
     @GetMapping("/products/pricing")
     public List<Map<String, Object>> productsPricing() {
@@ -326,17 +375,24 @@ public class AdminController {
 
     private static final java.util.Set<String> PRICING_KEYS = java.util.Set.of(
             "exchange_rate", "courier_cost_per_kg", "repack_cost_per_box",
-            "perfumes_per_box", "wholesale_profit_per_unit", "stock_extra_pen");
+            "perfumes_per_box", "wholesale_profit_per_unit", "stock_extra_pen",
+            "pricing_basis", "plausible_band_pct");
 
-    /** Recalcula el precio Consolidado y Stock de cada producto no bloqueado, con la fórmula única. */
+    /**
+     * Recalcula el precio Consolidado y Stock de cada producto no bloqueado, con la fórmula única.
+     * El costo sale de CostBasisService (ofertas vivas de proveedor); los productos sin ofertas
+     * (seed) usan su priceUsd legacy como respaldo. Nunca se toca available aquí.
+     */
     private void recomputeAllPrices() {
         List<Product> products = productRepo.findAll();
         for (Product p : products) {
             if (Boolean.TRUE.equals(p.getPriceLocked())) continue;
-            if (p.getPriceUsd() == null || p.getWeightG() == null) continue;
-            p.setWholesalePricePen(pricingService.suggestedPublicPricePen(p.getPriceUsd(), p.getWeightG()));
+            Double costUsd = costBasisService.basisCostUsdOrLegacy(p);
+            if (costUsd == null || p.getWeightG() == null) continue;
+            p.setPriceUsd(costUsd); // re-sync del legacy
+            p.setWholesalePricePen(pricingService.suggestedPublicPricePen(costUsd, p.getWeightG()));
             if (p.getStockPricePen() != null) {
-                p.setStockPricePen(pricingService.suggestedStockPricePen(p.getPriceUsd(), p.getWeightG()));
+                p.setStockPricePen(pricingService.suggestedStockPricePen(costUsd, p.getWeightG()));
             }
         }
         productRepo.saveAll(products);

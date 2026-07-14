@@ -9,10 +9,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Optimizador v2: restricciones como datos (SupplierConstraint) y decision
+ * FORZAR vs SALTAR por costo total (incluyendo ingreso perdido y relleno).
+ */
 @SpringBootTest
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:alloctest;DB_CLOSE_DELAY=-1",
@@ -25,62 +27,13 @@ class AllocationServiceTest {
     @Autowired AllocationService allocationService;
     @Autowired SupplierRepository supplierRepo;
     @Autowired SupplierOfferRepository offerRepo;
+    @Autowired SupplierConstraintRepository constraintRepo;
     @Autowired ProductRepository productRepo;
     @Autowired ConsolidadoRepository consolidadoRepo;
     @Autowired OrderRepository orderRepo;
+    @Autowired PurchasePlanRepository planRepo;
 
-    @Test
-    void asignaPorCostoYPriorizaZimaxx() {
-        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
-        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
-
-        Product a = product("ALLOC-A", "Lattafa", "Khamrah");      // Magnet 10 / Zimaxx 12
-        Product b = product("ALLOC-B", "Lattafa", "Yara");         // solo Zimaxx 30
-        Product c = product("ALLOC-C", "Afnan", "9pm");            // solo Magnet 8
-
-        offer(a, magnet, "A-MAG", 10.0);
-        offer(a, zimaxx, "A-ZX", 12.0);
-        offer(b, zimaxx, "B-ZX", 30.0);
-        offer(c, magnet, "C-MAG", 8.0);
-
-        Consolidado con = new Consolidado();
-        con.setStatus("ABIERTO");
-        con = consolidadoRepo.save(con);
-
-        Order o = new Order();
-        o.setConsolidado(con);
-        o.setClientName("Cliente Test");
-        o.setClientPhone("999");
-        o.setPaymentStatus("SEPARADO"); // estado activo
-        o.getItems().add(item(o, a, 1));
-        o.getItems().add(item(o, b, 1));
-        o.getItems().add(item(o, c, 1));
-        orderRepo.save(o);
-
-        AllocationResponse r = allocationService.computeAllocation(con.getId());
-
-        // baseline = A@10 + B@30 + C@8
-        assertEquals(48.0, r.baselineTotalUsd, 0.001);
-        // priorizar Zimaxx (min 2000): se mueve A (penalidad 2), C no tiene oferta Zimaxx
-        assertEquals(2.0, r.extraCostUsd, 0.001, "Forzar Zimaxx cuesta $2 extra (mover A)");
-        assertFalse(r.zimaxxMinReached, "Con min 2000 no se alcanza");
-        assertTrue(r.zimaxxGapUsd > 1900, "Falta casi todo para 2000");
-        assertTrue(r.unfulfillable.isEmpty(), "Todo tiene stock");
-
-        AllocationResponse.SupplierAllocation zg = group(r, "Zimaxx");
-        AllocationResponse.SupplierAllocation mg = group(r, "Magnet");
-        assertEquals(42.0, zg.subtotalUsd, 0.001, "Zimaxx = A(12) + B(30)");
-        assertEquals(8.0, mg.subtotalUsd, 0.001, "Magnet = C(8)");
-        assertTrue(zg.lines.stream().anyMatch(l -> l.name.equals("Khamrah") && l.movedToReachMin),
-                "A debe aparecer movido a Zimaxx");
-
-        // Con un minimo bajo (40) si se alcanza moviendo solo A
-        zimaxx.setMinOrderUsd(40.0);
-        supplierRepo.save(zimaxx);
-        AllocationResponse r2 = allocationService.computeAllocation(con.getId());
-        assertTrue(r2.zimaxxMinReached, "Con min 40 si se alcanza");
-        assertEquals(0.0, r2.zimaxxGapUsd, 0.001);
-    }
+    // ================= helpers =================
 
     private Product product(String sku, String brand, String name) {
         Product p = new Product();
@@ -90,6 +43,7 @@ class AllocationServiceTest {
         p.setMl(100);
         p.setAvailable(true);
         p.setArchived(false);
+        p.setWeightG(600);
         return productRepo.save(p);
     }
 
@@ -103,17 +57,253 @@ class AllocationServiceTest {
         offerRepo.save(o);
     }
 
-    private OrderItem item(Order o, Product p, int qty) {
+    private OrderItem item(Order o, Product p, int qty, double unitPricePen) {
         OrderItem it = new OrderItem();
         it.setOrder(o);
         it.setProduct(p);
         it.setQuantity(qty);
-        it.setUnitPricePen(1.0);
+        it.setUnitPricePen(unitPricePen);
         it.calculateSubtotal();
         return it;
     }
 
+    private Consolidado consolidadoWithOrder(java.util.function.BiConsumer<Order, Consolidado> filler) {
+        Consolidado con = new Consolidado();
+        con.setStatus("ABIERTO");
+        con = consolidadoRepo.save(con);
+        Order o = new Order();
+        o.setConsolidado(con);
+        o.setClientName("Cliente Test");
+        o.setClientPhone("999");
+        o.setPaymentStatus("SEPARADO");
+        filler.accept(o, con);
+        orderRepo.save(o);
+        return con;
+    }
+
+    private void setMinOrder(Supplier s, double min) {
+        constraintRepo.findBySupplier_Id(s.getId()).stream()
+                .filter(c -> "MIN_ORDER_USD".equals(c.getType()))
+                .forEach(constraintRepo::delete);
+        if (min > 0) constraintRepo.save(new SupplierConstraint(s, "MIN_ORDER_USD", min));
+        s.setMinOrderUsd(min);
+        supplierRepo.save(s);
+    }
+
     private AllocationResponse.SupplierAllocation group(AllocationResponse r, String name) {
         return r.suppliers.stream().filter(s -> s.name.equals(name)).findFirst().orElseThrow();
+    }
+
+    // ================= tests =================
+
+    @Test
+    void forzarGanaCuandoElMinimoEsAlcanzable() {
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        setMinOrder(zimaxx, 40.0); // alcanzable moviendo una linea
+
+        Product a = product("F1-A", "Lattafa", "Khamrah");   // Magnet 10 / Zimaxx 12
+        Product b = product("F1-B", "Lattafa", "Yara");      // solo Zimaxx 30
+        Product c = product("F1-C", "Afnan", "9pm");         // solo Magnet 8
+        offer(a, magnet, "F1-A-MAG", 10.0);
+        offer(a, zimaxx, "F1-A-ZX", 12.0);
+        offer(b, zimaxx, "F1-B-ZX", 30.0);
+        offer(c, magnet, "F1-C-MAG", 8.0);
+
+        // Precios realistas: saltar Zimaxx perderia la venta de B (S/113 cobrados).
+        Consolidado con = consolidadoWithOrder((o, cc) -> {
+            o.getItems().add(item(o, a, 1, 55.0));
+            o.getItems().add(item(o, b, 1, 113.0));
+            o.getItems().add(item(o, c, 1, 45.0));
+        });
+
+        AllocationResponse r = allocationService.computeAllocation(con.getId());
+
+        assertEquals(48.0, r.baselineTotalUsd, 0.001, "baseline = A@10 + B@30 + C@8");
+        // Forzar: mover A a Zimaxx (penalidad $2) -> cart 42 >= 40. Saltar: pierde B (~$33+30/3.4).
+        AllocationResponse.SupplierDecision d = r.skipAnalysis.stream()
+                .filter(x -> x.name.equals("Zimaxx")).findFirst().orElseThrow();
+        assertEquals("FORZAR", d.decision, "forzar ($50) < saltar ($18 + ingreso perdido): " + r.notes);
+        assertTrue(r.lostSales.isEmpty());
+        assertEquals(2.0, r.extraCostUsd, 0.001, "mover A cuesta $2");
+        assertTrue(r.zimaxxMinReached);
+
+        AllocationResponse.SupplierAllocation zg = group(r, "Zimaxx");
+        assertEquals(42.0, zg.subtotalUsd, 0.001, "Zimaxx = A(12) + B(30)");
+        assertTrue(zg.lines.stream().anyMatch(l -> l.name.equals("Khamrah") && l.movedToReachMin));
+    }
+
+    @Test
+    void saltarGanaCuandoElMinimoEsInalcanzablementeCaro() {
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        setMinOrder(zimaxx, 5000.0); // absurdo para esta demanda
+
+        Product a = product("F2-A", "Lattafa", "Asad");       // Zimaxx 9 / Magnet 10 (ZX gana la linea)
+        Product b = product("F2-B", "Armaf", "Club de Nuit"); // Magnet 25 / Zimaxx 28
+        offer(a, zimaxx, "F2-A-ZX", 9.0);
+        offer(a, magnet, "F2-A-MAG", 10.0);
+        offer(b, magnet, "F2-B-MAG", 25.0);
+        offer(b, zimaxx, "F2-B-ZX", 28.0);
+
+        Consolidado con = consolidadoWithOrder((o, cc) -> {
+            o.getItems().add(item(o, a, 1, 55.0));
+            o.getItems().add(item(o, b, 1, 110.0));
+        });
+
+        AllocationResponse r = allocationService.computeAllocation(con.getId());
+
+        AllocationResponse.SupplierDecision d = r.skipAnalysis.stream()
+                .filter(x -> x.name.equals("Zimaxx")).findFirst().orElseThrow();
+        assertEquals("SALTAR", d.decision,
+                "rellenar ~$4963 al 15% (~$744) es carisimo; A migra a Magnet por solo +$1");
+        assertTrue(r.lostSales.isEmpty(), "nada se pierde: todo migra a Magnet");
+        assertEquals(35.0, r.chosenTotalUsd, 0.001, "todo en Magnet: 10+25");
+        assertFalse(r.zimaxxMinReached);
+        assertTrue(r.suppliers.stream().noneMatch(s -> s.name.equals("Zimaxx")),
+                "Zimaxx no recibe compra este ciclo");
+    }
+
+    @Test
+    void minimoDeUnidadesDeFragranceSense() {
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        setMinOrder(zimaxx, 0);
+        Supplier fs = supplierRepo.save(new Supplier("FragranceSense", 0.0, false));
+        constraintRepo.save(new SupplierConstraint(fs, "MIN_UNITS", 3.0));
+
+        // FS es mas barato en los tres productos, pero la demanda son 3 unidades justas.
+        Product a = product("F3-A", "Lattafa", "Eclaire");
+        Product b = product("F3-B", "Lattafa", "Ansaam Gold");
+        Product c = product("F3-C", "Rasasi", "Hawas");
+        offer(a, fs, "F3-A-FS", 18.0);
+        offer(a, magnet, "F3-A-MAG", 21.0);
+        offer(b, fs, "F3-B-FS", 15.0);
+        offer(b, magnet, "F3-B-MAG", 16.0);
+        offer(c, fs, "F3-C-FS", 24.0);
+        offer(c, magnet, "F3-C-MAG", 27.0);
+
+        Consolidado con = consolidadoWithOrder((o, cc) -> {
+            o.getItems().add(item(o, a, 1, 90.0));
+            o.getItems().add(item(o, b, 1, 80.0));
+            o.getItems().add(item(o, c, 1, 115.0));
+        });
+
+        AllocationResponse r = allocationService.computeAllocation(con.getId());
+
+        // Baseline ya pone las 3 unidades en FS -> su MIN_UNITS=3 queda satisfecho sin mover nada.
+        assertEquals(57.0, r.baselineTotalUsd, 0.001);
+        assertEquals(57.0, r.chosenTotalUsd, 0.001, "no hay sobrecosto: el minimo se cumple solo");
+        assertTrue(r.lostSales.isEmpty());
+        AllocationResponse.SupplierAllocation fg = group(r, "FragranceSense");
+        assertEquals(3, fg.lines.stream().mapToInt(l -> l.quantity).sum());
+    }
+
+    @Test
+    void minimoDeUnidadesInsatisfechoDecideForzarOSaltar() {
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        setMinOrder(zimaxx, 0);
+        Supplier fs = supplierRepo.save(new Supplier("FragranceSense2", 0.0, false));
+        constraintRepo.save(new SupplierConstraint(fs, "MIN_UNITS", 4.0));
+
+        // FS gana solo en A ($5 menos); las otras 2 lineas son mas baratas en Magnet por poco.
+        Product a = product("F4-A", "Lattafa", "Mayar");
+        Product b = product("F4-B", "Lattafa", "Sutan");
+        Product c = product("F4-C", "Armaf", "Ventana");
+        offer(a, fs, "F4-A-FS", 15.0);
+        offer(a, magnet, "F4-A-MAG", 20.0);
+        offer(b, fs, "F4-B-FS", 16.5);
+        offer(b, magnet, "F4-B-MAG", 16.0);
+        offer(c, fs, "F4-C-FS", 22.5);
+        offer(c, magnet, "F4-C-MAG", 22.0);
+
+        Consolidado con = consolidadoWithOrder((o, cc) -> {
+            o.getItems().add(item(o, a, 2, 75.0));
+            o.getItems().add(item(o, b, 1, 78.0));
+            o.getItems().add(item(o, c, 1, 100.0));
+        });
+
+        AllocationResponse r = allocationService.computeAllocation(con.getId());
+        // Baseline: A(x2)@FS=30, B@MAG=16, C@MAG=22 -> FS tiene 2 de 4 unidades.
+        // FORZAR: mover B (+0.5) y C (+0.5) a FS -> $69 total (+1). SALTAR: A se va a Magnet (+10) -> $78.
+        AllocationResponse.SupplierDecision d = r.skipAnalysis.stream()
+                .filter(x -> x.name.startsWith("FragranceSense2")).findFirst().orElseThrow();
+        assertEquals("FORZAR", d.decision, String.valueOf(r.notes));
+        AllocationResponse.SupplierAllocation fg = group(r, "FragranceSense2");
+        assertEquals(4, fg.lines.stream().mapToInt(l -> l.quantity).sum(), "las 4 unidades quedan en FS");
+        assertEquals(69.0, r.chosenTotalUsd, 0.001);
+    }
+
+    @Test
+    void guardiaDeMargenBloqueaConfirmSinForce() {
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        setMinOrder(zimaxx, 0);
+
+        Product a = product("F5-A", "Lattafa", "Oud Mood");
+        offer(a, magnet, "F5-A-MAG", 30.0); // landed ~ (30+5.4+0.875)*3.4 = ~123 PEN
+
+        // Vendido a S/95: margen negativo -> bajo el piso (S/8).
+        Consolidado con = consolidadoWithOrder((o, cc) ->
+                o.getItems().add(item(o, a, 1, 95.0)));
+
+        AllocationResponse r = allocationService.computeAndSaveDraft(con.getId());
+        assertNotNull(r.planId);
+        assertFalse(r.marginWarnings.isEmpty(), "la venta quedaria bajo el piso de margen");
+
+        // confirm sin force -> excepcion con el detalle (el controller la mapea a 409)
+        Long planId = r.planId;
+        AllocationService.MarginFloorException ex = assertThrows(
+                AllocationService.MarginFloorException.class,
+                () -> allocationService.confirmPlan(con.getId(), planId, false));
+        assertFalse(ex.warnings.isEmpty());
+
+        // con force=true se confirma
+        PurchasePlan plan = allocationService.confirmPlan(con.getId(), planId, true);
+        assertEquals("CONFIRMED", plan.getStatus());
+        assertNotNull(plan.getConfirmedAt());
+    }
+
+    @Test
+    void dosMinimosSimultaneosSeEnumeranExactamente() {
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        setMinOrder(zimaxx, 60.0);
+        setMinOrder(magnet, 50.0);
+
+        // Tres productos disponibles en ambos; ninguno de los dos carritos llega solo.
+        Product a = product("F6-A", "Lattafa", "Ajwad");
+        Product b = product("F6-B", "Lattafa", "Ramz");
+        Product c = product("F6-C", "Afnan", "Supremacy");
+        offer(a, zimaxx, "F6-A-ZX", 20.0);
+        offer(a, magnet, "F6-A-MAG", 22.0);
+        offer(b, zimaxx, "F6-B-ZX", 25.0);
+        offer(b, magnet, "F6-B-MAG", 24.0);
+        offer(c, zimaxx, "F6-C-ZX", 30.0);
+        offer(c, magnet, "F6-C-MAG", 29.0);
+
+        Consolidado con = consolidadoWithOrder((o, cc) -> {
+            o.getItems().add(item(o, a, 1, 95.0));
+            o.getItems().add(item(o, b, 1, 105.0));
+            o.getItems().add(item(o, c, 1, 125.0));
+        });
+
+        AllocationResponse r = allocationService.computeAllocation(con.getId());
+        // baseline: A@ZX 20, B@MAG 24, C@MAG 29 -> ZX=20<60, MAG=53>=50: solo ZX insatisfecho.
+        // FORZAR ZX: mover B(+1) y C(+1)? Con B basta? 20+25=45<60; +C: 75>=60 (+2 total, pero
+        // rompe el minimo de Magnet: 0 lineas -> Magnet sin restriccion violada? cart vacio:
+        // deficit 50>0 PERO un carrito vacio no es un pedido -> el optimizador lo trata como
+        // proveedor saltado sin costo. Alternativa: SALTAR ZX: A migra a MAG (+2) -> MAG=75.
+        // Ambos caminos cuestan +2; cualquiera es valido; lo importante: 0 ventas perdidas
+        // y todos los carritos NO vacios cumplen su minimo.
+        assertTrue(r.lostSales.isEmpty(), String.valueOf(r.notes));
+        for (AllocationResponse.SupplierAllocation g : r.suppliers) {
+            if (g.subtotalUsd > 0 && g.minOrderUsd > 0) {
+                assertTrue(g.subtotalUsd >= g.minOrderUsd,
+                        g.name + " compra " + g.subtotalUsd + " < min " + g.minOrderUsd);
+            }
+        }
+        assertEquals(75.0, r.chosenTotalUsd, 0.001, "+2 sobre baseline 73");
     }
 }

@@ -64,7 +64,7 @@ public class ZimaxxParser extends AbstractSupplierParser {
                 String typeLc = type == null ? "" : type.toLowerCase();
 
                 ParsedRow pr = new ParsedRow();
-                pr.gtin = PerfumeNormalizer.gtin14(cellRawId(row, cUpc));
+                applyGtin(pr, cellRawId(row, cUpc));
                 pr.brand = cellStr(row, cBrand);
                 pr.rawTitle = title;
                 pr.name = PerfumeNormalizer.cleanName(title);

@@ -81,10 +81,19 @@ public class ImportBatchService {
                 ? mapper.readValue(batch.getColumnMapJson(), ColumnMapping.class) : null;
         ExcelImportService.ParsedData pd = importService.parse(supplier, bytes, mapping);
         applyOverrides(pd.rows, req);
-        ImportSummary summary = importService.commit(supplier, pd.rows);
+        java.util.Set<Integer> approved = req != null && req.approvedSuspiciousIdx != null
+                ? new java.util.HashSet<>(req.approvedSuspiciousIdx) : java.util.Set.of();
+        ImportSummary summary = importService.commit(supplier, pd.rows, approved);
         batch.setStatus("PUBLISHED");
         batch.setFileBase64(null); // liberar espacio
         batchRepo.save(batch);
+
+        // Aprender el perfil del parser: las columnas que el admin confirmo al publicar
+        // quedan guardadas en el proveedor; el proximo Excel se parsea directo con ellas.
+        if (pd.generic && batch.getColumnMapJson() != null) {
+            supplier.setParserProfileJson(batch.getColumnMapJson());
+            supplierRepo.save(supplier);
+        }
         return summary;
     }
 

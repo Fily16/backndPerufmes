@@ -93,6 +93,14 @@ public class Product {
     @Column(name = "gtin_conflict", nullable = false, columnDefinition = "boolean default false")
     private Boolean gtinConflict = false;
 
+    /** true mientras el producto espera revision del admin en la cola de matching (posible duplicado). */
+    @Column(name = "match_pending", nullable = false, columnDefinition = "boolean default false")
+    private Boolean matchPending = false;
+
+    /** Si el producto fue fusionado en otro: id del canonico. El producto queda archivado (auditoria). */
+    @Column(name = "merged_into_id")
+    private Long mergedIntoId;
+
     // --- Notas olfativas (slugs canonicos unidos por coma; ver note-catalog.ts en el frontend) ---
     @Column(name = "notes_top", length = 500)
     private String notesTop;
@@ -342,6 +350,22 @@ public class Product {
 
     public void setGtinConflict(Boolean gtinConflict) {
         this.gtinConflict = gtinConflict;
+    }
+
+    public Boolean getMatchPending() {
+        return matchPending;
+    }
+
+    public void setMatchPending(Boolean matchPending) {
+        this.matchPending = matchPending;
+    }
+
+    public Long getMergedIntoId() {
+        return mergedIntoId;
+    }
+
+    public void setMergedIntoId(Long mergedIntoId) {
+        this.mergedIntoId = mergedIntoId;
     }
 
     public String getNotesTop() {

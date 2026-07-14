@@ -10,6 +10,12 @@ import java.util.Map;
 public class PublishRequest {
     public Map<String, RowOverride> overrides;
 
+    /**
+     * Indices (del preview) de filas SOSPECHOSAS (costo fuera de rango) que el admin
+     * aprueba igual. Las no aprobadas se guardan fuera de stock y no afectan precios.
+     */
+    public java.util.List<Integer> approvedSuspiciousIdx;
+
     public static class RowOverride {
         public String brand;
         public String name;

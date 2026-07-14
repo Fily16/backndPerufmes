@@ -3,6 +3,8 @@ package org.example.backendbvaberiaperfumes.service.parser;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Row;
+import org.example.backendbvaberiaperfumes.dto.ParsedRow;
+import org.example.backendbvaberiaperfumes.util.GtinCanonicalizer;
 
 import java.math.BigDecimal;
 import java.util.HashMap;
@@ -10,6 +12,14 @@ import java.util.Map;
 
 /** Helpers comunes para leer celdas de POI de forma segura. */
 public abstract class AbstractSupplierParser implements SupplierExcelParser {
+
+    /** Canonicaliza el codigo de barras y deja gtin/gtinRaw/gtinStatus en la fila. */
+    protected void applyGtin(ParsedRow pr, Object raw) {
+        GtinCanonicalizer.GtinResult gr = GtinCanonicalizer.canonicalize(raw);
+        pr.gtin = gr.canonical14;
+        pr.gtinRaw = gr.rawDigits;
+        pr.gtinStatus = gr.status.name();
+    }
 
     protected String cellStr(Row row, int col) {
         if (row == null || col < 0) return null;

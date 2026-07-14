@@ -9,9 +9,14 @@ import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.repository.AdminRepository;
 import org.example.backendbvaberiaperfumes.repository.AppConfigRepository;
 import org.example.backendbvaberiaperfumes.model.Supplier;
+import org.example.backendbvaberiaperfumes.model.SupplierConstraint;
+import org.example.backendbvaberiaperfumes.model.SupplierOffer;
 import org.example.backendbvaberiaperfumes.repository.ConsolidadoRepository;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
+import org.example.backendbvaberiaperfumes.repository.SupplierConstraintRepository;
+import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
+import org.example.backendbvaberiaperfumes.util.GtinCanonicalizer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.io.ClassPathResource;
@@ -31,6 +36,7 @@ public class DataSeederService implements CommandLineRunner {
     private final AppConfigRepository configRepo;
     private final ConsolidadoRepository consolidadoRepo;
     private final SupplierRepository supplierRepo;
+    private final SupplierOfferRepository offerRepo;
     private final PasswordEncoder passwordEncoder;
 
     @Value("${app.migrate.h2:false}") private boolean migrating;
@@ -55,18 +61,25 @@ public class DataSeederService implements CommandLineRunner {
             "{\"imageUrl\":\"\",\"title\":\"Los más pedidos\",\"subtitle\":\"Khamrah, Yara, Club de Nuit y más\",\"ctaText\":\"Comprar ahora\",\"linkType\":\"search\",\"linkValue\":\"khamrah\"}]";
 
     private final PricingService pricingService;
+    private final DuplicateScanService duplicateScanService;
+    private final SupplierConstraintRepository constraintRepo;
 
     public DataSeederService(ProductRepository productRepo, AdminRepository adminRepo,
                              AppConfigRepository configRepo, ConsolidadoRepository consolidadoRepo,
-                             SupplierRepository supplierRepo,
-                             PasswordEncoder passwordEncoder, PricingService pricingService) {
+                             SupplierRepository supplierRepo, SupplierOfferRepository offerRepo,
+                             PasswordEncoder passwordEncoder, PricingService pricingService,
+                             DuplicateScanService duplicateScanService,
+                             SupplierConstraintRepository constraintRepo) {
         this.productRepo = productRepo;
         this.adminRepo = adminRepo;
         this.configRepo = configRepo;
         this.consolidadoRepo = consolidadoRepo;
         this.supplierRepo = supplierRepo;
+        this.offerRepo = offerRepo;
         this.passwordEncoder = passwordEncoder;
         this.pricingService = pricingService;
+        this.duplicateScanService = duplicateScanService;
+        this.constraintRepo = constraintRepo;
     }
 
     @Override
@@ -83,7 +96,123 @@ public class DataSeederService implements CommandLineRunner {
         calculateWholesalePrices();
         calculateRetailPrices();
         normalizePricesOnce();
+        renormalizeGtinsOnce();
+        resyncPriceUsdOnce();
+        scanDuplicatesOnce();
+        migrateSupplierConstraintsOnce();
         seedFirstConsolidado();
+    }
+
+    /**
+     * Migra UNA sola vez los minimos legacy (Supplier.minOrderUsd) a la tabla de
+     * restricciones (supplier_constraints), que es lo que lee el optimizador de compra.
+     * Ademas siembra el minimo de 48 UNIDADES de FragranceSense si el proveedor existe.
+     */
+    private void migrateSupplierConstraintsOnce() {
+        if (configRepo.findByConfigKey("supplier_constraints_v1").isPresent()) return;
+        int created = 0;
+        for (Supplier s : supplierRepo.findAll()) {
+            if (s.getMinOrderUsd() != null && s.getMinOrderUsd() > 0
+                    && !constraintRepo.existsBySupplier_IdAndType(s.getId(), "MIN_ORDER_USD")) {
+                constraintRepo.save(new SupplierConstraint(s, "MIN_ORDER_USD", s.getMinOrderUsd()));
+                created++;
+            }
+            // FragranceSense: minimo de 48 unidades sin importar cuales.
+            if (s.getName() != null && s.getName().toLowerCase().contains("fragrancesense")
+                    && !constraintRepo.existsBySupplier_IdAndType(s.getId(), "MIN_UNITS")) {
+                constraintRepo.save(new SupplierConstraint(s, "MIN_UNITS", 48.0));
+                created++;
+            }
+        }
+        forceConfig("supplier_constraints_v1", "true", "Minimos de proveedor migrados a supplier_constraints (corrida unica)");
+        System.out.println("[CONSTRAINTS] Restricciones migradas/creadas: " + created);
+    }
+
+    /**
+     * Re-sincroniza UNA sola vez el legacy Product.priceUsd con el costo real de las
+     * ofertas de proveedor (antes quedaba congelado al valor de la primera importacion,
+     * y la ganancia del consolidado / recalculo por config leian ese valor obsoleto).
+     * Productos sin ofertas (seed puro) conservan su priceUsd.
+     */
+    private void resyncPriceUsdOnce() {
+        if (configRepo.findByConfigKey("price_usd_resync_v1").isPresent()) return;
+        int updated = 0;
+        Map<Long, Double> cheapestByProduct = new java.util.HashMap<>();
+        for (SupplierOffer o : offerRepo.findAll()) {
+            if (o.getCostUsd() == null || !Boolean.TRUE.equals(o.getInStock())) continue;
+            if (o.getSupplier() == null || !Boolean.TRUE.equals(o.getSupplier().getActive())) continue;
+            cheapestByProduct.merge(o.getProduct().getId(), o.getCostUsd(), Math::min);
+        }
+        for (Map.Entry<Long, Double> e : cheapestByProduct.entrySet()) {
+            Product p = productRepo.findById(e.getKey()).orElse(null);
+            if (p == null) continue;
+            if (p.getPriceUsd() == null || Math.abs(p.getPriceUsd() - e.getValue()) > 0.001) {
+                p.setPriceUsd(e.getValue());
+                productRepo.save(p);
+                updated++;
+            }
+        }
+        forceConfig("price_usd_resync_v1", "true", "priceUsd re-sincronizado con las ofertas de proveedor (corrida unica)");
+        System.out.println("[COSTO] priceUsd re-sincronizado en " + updated + " productos");
+    }
+
+    /**
+     * Puebla UNA sola vez la cola de revision con los duplicados historicos del catalogo
+     * (seed sin GTIN vs importados con GTIN). No fusiona nada: el admin decide cada caso
+     * desde el panel. Se puede relanzar a demanda con POST /api/admin/duplicates/scan.
+     */
+    private void scanDuplicatesOnce() {
+        if (configRepo.findByConfigKey("dedup_scan_v1").isPresent()) return;
+        try {
+            int created = duplicateScanService.scan();
+            System.out.println("[DEDUP] Candidatos de fusion detectados para revision: " + created);
+        } catch (Exception e) {
+            System.err.println("[DEDUP] Escaneo inicial fallo (se puede relanzar desde el admin): " + e.getMessage());
+        }
+        forceConfig("dedup_scan_v1", "true", "Escaneo inicial de duplicados ejecutado (corrida unica)");
+    }
+
+    /**
+     * Re-canonicaliza UNA sola vez todos los GTIN guardados con el validador de checksum
+     * (GtinCanonicalizer). Los codigos con checksum invalido (typos del proveedor) quedan
+     * en cuarentena: gtin=null + status CHECKSUM_FAIL; la identidad pasa a resolverse por
+     * matching de nombre (L2). NO fusiona nada: eso lo decide el admin desde la cola de revision.
+     */
+    private void renormalizeGtinsOnce() {
+        if (configRepo.findByConfigKey("gtin_canonical_v1").isPresent()) return;
+        int offersQuarantined = 0, productsQuarantined = 0;
+        for (SupplierOffer o : offerRepo.findAll()) {
+            String source = o.getGtin() != null ? o.getGtin() : o.getGtinRaw();
+            if (source == null) continue;
+            GtinCanonicalizer.GtinResult r = GtinCanonicalizer.canonicalize(source);
+            o.setGtinRaw(r.rawDigits);
+            o.setGtinStatus(r.status.name());
+            if (r.ok()) {
+                o.setGtin(r.canonical14);
+            } else {
+                o.setGtin(null);
+                offersQuarantined++;
+            }
+            offerRepo.save(o);
+        }
+        for (Product p : productRepo.findAll()) {
+            if (p.getGtin() == null) continue;
+            GtinCanonicalizer.GtinResult r = GtinCanonicalizer.canonicalize(p.getGtin());
+            if (r.ok()) {
+                if (!r.canonical14.equals(p.getGtin())) {
+                    p.setGtin(r.canonical14);
+                    productRepo.save(p);
+                }
+            } else {
+                p.setGtin(null);
+                p.setGtinConflict(true);
+                productRepo.save(p);
+                productsQuarantined++;
+            }
+        }
+        forceConfig("gtin_canonical_v1", "true", "GTINs re-validados con checksum GS1 (corrida unica)");
+        System.out.println("[GTIN] Cuarentena por checksum invalido: " + offersQuarantined
+                + " ofertas, " + productsQuarantined + " productos");
     }
 
     /** Fuerza los parámetros fijos de precio. Courier=9 (editable en Ajustes, pero se corrige aquí). */
@@ -184,6 +313,14 @@ public class DataSeederService implements CommandLineRunner {
             Map.entry("deposit_per_unit", new String[]{"20", "Monto de separacion por perfume (S/)"}),
             Map.entry("repack_cost_per_box", new String[]{repackCost, "Costo de reempaque por caja de 4 perfumes (USD)"}),
             Map.entry("zimaxx_priority_enabled", new String[]{zimaxxPriority, "Forzar llegar al minimo de Zimaxx ($2000) en la asignacion de compra"}),
+            Map.entry("pricing_basis", new String[]{"CHEAPEST", "Base del precio publicado: CHEAPEST | PRIORITY | WORST_PLAUSIBLE"}),
+            Map.entry("min_margin_pen_per_unit", new String[]{"8", "Margen minimo por unidad (S/): bajo esto la asignacion de compra avisa/bloquea"}),
+            Map.entry("plausible_band_pct", new String[]{"12", "Banda % sobre la oferta mas barata para WORST_PLAUSIBLE"}),
+            Map.entry("match_review_jaccard", new String[]{"0.6", "Similitud minima (0-1) para proponer un posible duplicado a revision"}),
+            Map.entry("storefill_penalty_pct", new String[]{"15", "Penalidad contable (%) del relleno de tienda para llegar a un minimo"}),
+            Map.entry("lost_sale_penalty_pen", new String[]{"30", "Penalidad (S/ por unidad) por perder una venta al saltar un proveedor"}),
+            Map.entry("min_plausible_cost_usd", new String[]{"4", "Costo minimo plausible (USD): bajo esto la fila importada es sospechosa"}),
+            Map.entry("max_plausible_cost_usd", new String[]{"400", "Costo maximo plausible (USD): sobre esto la fila importada es sospechosa"}),
             Map.entry("form_sale_api_key", new String[]{UUID.randomUUID().toString().replace("-", "").substring(0, 16), "API Key para Google Form (auto-generada)"}),
             Map.entry("home_banners", new String[]{DEFAULT_BANNERS_JSON, "Banners del home (JSON): imageUrl,title,subtitle,ctaText,linkType(product|brand|category|search|url),linkValue"}),
             Map.entry("home_promos", new String[]{"[]", "Tiles de promociones del home (JSON, misma estructura que home_banners). Vacio = oculto."})

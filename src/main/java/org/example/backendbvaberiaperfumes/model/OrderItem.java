@@ -30,6 +30,18 @@ public class OrderItem {
     @Column(nullable = false, columnDefinition = "boolean default false")
     private boolean picked = false;
 
+    /**
+     * Costo USD del producto al momento del pedido (misma base que definio el precio).
+     * Congela el costo igual que unitPricePen congela el ingreso: la ganancia del
+     * consolidado deja de derivar cuando cambian ofertas/tipo de cambio despues.
+     */
+    @Column(name = "unit_cost_usd_snapshot")
+    private Double unitCostUsdSnapshot;
+
+    /** Peso (g) del producto al momento del pedido (el courier se costea por peso). */
+    @Column(name = "weight_g_snapshot")
+    private Integer weightGSnapshot;
+
     public OrderItem() {}
 
     public void calculateSubtotal() {
@@ -58,4 +70,10 @@ public class OrderItem {
 
     public boolean isPicked() { return picked; }
     public void setPicked(boolean picked) { this.picked = picked; }
+
+    public Double getUnitCostUsdSnapshot() { return unitCostUsdSnapshot; }
+    public void setUnitCostUsdSnapshot(Double unitCostUsdSnapshot) { this.unitCostUsdSnapshot = unitCostUsdSnapshot; }
+
+    public Integer getWeightGSnapshot() { return weightGSnapshot; }
+    public void setWeightGSnapshot(Integer weightGSnapshot) { this.weightGSnapshot = weightGSnapshot; }
 }

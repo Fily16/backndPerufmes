@@ -121,7 +121,7 @@ public class GenericSupplierParser extends AbstractSupplierParser {
             if (noUpc && price == null) continue;
 
             ParsedRow pr = new ParsedRow();
-            pr.gtin = PerfumeNormalizer.gtin14(upcRaw);
+            applyGtin(pr, upcRaw);
             // Marca: columna de marca si existe; si no, la primera palabra del titulo. Nunca el proveedor.
             String brand = (brandCol != null && !brandCol.isBlank()) ? brandCol.trim() : firstWord(desc);
             pr.brand = brand;

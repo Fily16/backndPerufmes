@@ -60,10 +60,12 @@ class ExcelImportServiceTest {
         assertEquals(985, z.getOffersCreated(), "Zimaxx debe crear 985 ofertas");
         assertEquals(0, z.getCollisions(), "Zimaxx no tiene colisiones internas");
 
-        // Magnet: 504 filas, 6 colisiones de UPC, 2 sin UPC
+        // Magnet: 504 filas, 6 colisiones de UPC, 5 sin UPC valido
+        // (2 celdas vacias + 3 codigos con checksum GS1 invalido = typos del proveedor
+        //  que ahora quedan en cuarentena en vez de crear identidades falsas).
         assertEquals(504, m.getRowsRead(), "Magnet debe leer 504 productos");
         assertEquals(6, m.getCollisions(), "Magnet tiene 6 colisiones de UPC que NO se deben fusionar");
-        assertEquals(2, m.getNoUpcRows(), "Magnet tiene 2 filas sin UPC");
+        assertEquals(5, m.getNoUpcRows(), "Magnet: 2 sin codigo + 3 typos de checksum en cuarentena");
 
         // Total de ofertas guardadas = 985 + 504
         assertEquals(1489, offerRepo.count(), "Deben quedar 1489 ofertas (985 Zimaxx + 504 Magnet)");

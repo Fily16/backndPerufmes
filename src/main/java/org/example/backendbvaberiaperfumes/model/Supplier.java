@@ -27,6 +27,14 @@ public class Supplier {
     @Column(nullable = false)
     private Boolean priorityToReachMin = false;
 
+    /**
+     * Perfil del parser generico (ColumnMapping serializado): columnas ya confirmadas
+     * para este proveedor. Se aprende solo al publicar la primera importacion; proveedor
+     * nuevo = fila + este perfil, sin escribir codigo.
+     */
+    @Column(name = "parser_profile_json", length = 2000)
+    private String parserProfileJson;
+
     public Supplier() {}
 
     public Supplier(String name, Double minOrderUsd, Boolean priorityToReachMin) {
@@ -47,4 +55,6 @@ public class Supplier {
     public void setActive(Boolean active) { this.active = active; }
     public Boolean getPriorityToReachMin() { return priorityToReachMin; }
     public void setPriorityToReachMin(Boolean priorityToReachMin) { this.priorityToReachMin = priorityToReachMin; }
+    public String getParserProfileJson() { return parserProfileJson; }
+    public void setParserProfileJson(String parserProfileJson) { this.parserProfileJson = parserProfileJson; }
 }

@@ -142,6 +142,47 @@ public class PricingService {
         return Math.ceil(landedPen(costUsd, weightG) + getStockExtraPen());
     }
 
+    // --- Multi-proveedor: base de costo del precio publicado y piso de margen ---
+
+    /** Estrategia del costo base del precio publicado: CHEAPEST | PRIORITY | WORST_PLAUSIBLE. */
+    public String getPricingBasis() {
+        return configRepo.findByConfigKey("pricing_basis")
+                .map(AppConfig::getConfigValue)
+                .filter(v -> v != null && !v.isBlank())
+                .map(String::toUpperCase)
+                .orElse("CHEAPEST");
+    }
+
+    /** Margen minimo por unidad (PEN): bajo esto, la asignacion de compra avisa/bloquea. */
+    public double getMinMarginPenPerUnit() {
+        return getConfigDouble("min_margin_pen_per_unit", 8.0);
+    }
+
+    /** Banda (%) sobre la oferta mas barata para considerar "plausible" a un proveedor caro. */
+    public double getPlausibleBandPct() {
+        return getConfigDouble("plausible_band_pct", 12.0);
+    }
+
+    /** Penalidad contable (%) del monto rellenado con compra de tienda para llegar a un minimo. */
+    public double getStorefillPenaltyPct() {
+        return getConfigDouble("storefill_penalty_pct", 15.0);
+    }
+
+    /** Penalidad (PEN/unidad) por perder una venta al saltar a un proveedor insatisfecho. */
+    public double getLostSalePenaltyPen() {
+        return getConfigDouble("lost_sale_penalty_pen", 30.0);
+    }
+
+    /** Costo minimo plausible (USD) de un perfume: bajo esto la fila es sospechosa (typo). */
+    public double getMinPlausibleCostUsd() {
+        return getConfigDouble("min_plausible_cost_usd", 4.0);
+    }
+
+    /** Costo maximo plausible (USD): sobre esto la fila es sospechosa. */
+    public double getMaxPlausibleCostUsd() {
+        return getConfigDouble("max_plausible_cost_usd", 400.0);
+    }
+
     // --- Consolidado summary calculations ---
     public double calculateTotalInvestmentPen(double subtotalProductsUsd, double courierCostUsd, double extraShippingUsd) {
         return (subtotalProductsUsd + courierCostUsd + extraShippingUsd) * getExchangeRate();
