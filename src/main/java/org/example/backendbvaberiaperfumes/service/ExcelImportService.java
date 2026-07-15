@@ -138,6 +138,17 @@ public class ExcelImportService {
 
         MatchingEngine.Session session = engine.openSession();
 
+        // PRECARGA en memoria: contra una BD remota (Aiven), consultar por fila
+        // convertia un Excel de 1000 filas en ~3000 viajes de red (minutos).
+        Map<String, SupplierOffer> offersByKey = new HashMap<>();
+        for (SupplierOffer o : offerRepo.findBySupplier_Id(supplier.getId())) {
+            offersByKey.put(o.getOfferKey(), o);
+        }
+        Map<Long, List<SupplierOffer>> inStockByProduct = new HashMap<>();
+        for (SupplierOffer o : offerRepo.findAllInStockActive()) {
+            inStockByProduct.computeIfAbsent(o.getProduct().getId(), k -> new ArrayList<>()).add(o);
+        }
+
         Set<String> seen = new HashSet<>();
         for (int i = 0; i < pd.rows.size(); i++) {
             ParsedRow row = pd.rows.get(i);
@@ -162,14 +173,14 @@ public class ExcelImportService {
             if (line.suspicious) p.suspiciousRows++;
 
             // Resolver producto igual que en commit (offerKey del proveedor -> GTIN -> matching L2).
-            SupplierOffer existing = offerRepo.findBySupplier_IdAndOfferKey(supplier.getId(), ok.key).orElse(null);
+            SupplierOffer existing = offersByKey.get(ok.key);
             Product match = null;
             if (existing != null) {
                 match = existing.getProduct();
                 line.matchLevel = "EXISTING";
                 p.updatedOffers++;
             } else if (ok.trusted) {
-                match = productRepo.findByGtin(row.gtin).orElse(null);
+                match = session.byGtin(row.gtin);
                 if (match == null) {
                     line.matchLevel = "NEW";
                     p.newProducts++;
@@ -214,7 +225,7 @@ public class ExcelImportService {
             }
 
             if (row.costUsd != null) {
-                line.newPricePen = simulateNewPrice(match, supplier, row.costUsd);
+                line.newPricePen = simulateNewPrice(match, supplier, row.costUsd, inStockByProduct);
                 if (line.currentPricePen != null && line.newPricePen != null) {
                     if (line.newPricePen < line.currentPricePen) p.priceDrops++;
                     else if (line.newPricePen > line.currentPricePen) p.priceRises++;
@@ -226,12 +237,13 @@ public class ExcelImportService {
     }
 
     /** Precio publico que quedaria si se publica esta fila (respeta priceLocked y otras ofertas activas). */
-    private Double simulateNewPrice(Product match, Supplier supplier, double thisCost) {
+    private Double simulateNewPrice(Product match, Supplier supplier, double thisCost,
+                                    Map<Long, List<SupplierOffer>> inStockByProduct) {
         if (match == null) return pricing.suggestedPublicPricePen(thisCost, 600);
         if (Boolean.TRUE.equals(match.getPriceLocked())) return match.getWholesalePricePen();
         int weight = match.getWeightG() != null ? match.getWeightG() : 600;
         double cheapest = thisCost;
-        for (SupplierOffer o : offerRepo.findByProduct_IdAndInStockTrueAndSupplier_ActiveTrue(match.getId())) {
+        for (SupplierOffer o : inStockByProduct.getOrDefault(match.getId(), List.of())) {
             if (supplier.getId().equals(o.getSupplierId())) continue; // esta oferta se reemplaza por thisCost
             if (o.getCostUsd() != null) cheapest = Math.min(cheapest, o.getCostUsd());
         }
@@ -260,6 +272,12 @@ public class ExcelImportService {
         // en este mismo commit se agregan para que filas posteriores los encuentren.
         MatchingEngine.Session session = engine.openSession();
 
+        // PRECARGA de las ofertas existentes del proveedor (1 consulta en vez de 1 por fila).
+        Map<String, SupplierOffer> offersByKey = new HashMap<>();
+        for (SupplierOffer o : offerRepo.findBySupplier_Id(supplierId)) {
+            offersByKey.put(o.getOfferKey(), o);
+        }
+
         Set<String> seenOfferKeys = new HashSet<>();
         Set<Long> touchedProducts = new HashSet<>();
         Set<String> seenCandidatePairs = new HashSet<>();
@@ -283,7 +301,7 @@ public class ExcelImportService {
                 suspicious++;
             }
 
-            SupplierOffer offer = offerRepo.findBySupplier_IdAndOfferKey(supplierId, ok.key).orElse(null);
+            SupplierOffer offer = offersByKey.get(ok.key);
             Product product;
             MatchingEngine.MatchOutcome outcome = null; // solo filas nuevas sin GTIN confiable
             boolean matchedByGtin = false;
@@ -292,9 +310,9 @@ public class ExcelImportService {
                 offersUpdated++;
             } else {
                 if (ok.trusted) {
-                    Optional<Product> existing = productRepo.findByGtin(row.gtin);
-                    if (existing.isPresent()) {
-                        product = existing.get();
+                    Product existing = session.byGtin(row.gtin);
+                    if (existing != null) {
+                        product = existing;
                         matchedByGtin = true;
                     } else {
                         product = matching.createProduct(row, row.gtin, false, supplier.getName());
@@ -370,10 +388,18 @@ public class ExcelImportService {
         }
 
         // Recalcular precios (el mas barato manda; oculta huerfanos). Respeta priceLocked.
+        // Las ofertas cotizables se cargan en UNA consulta (contra Aiven, 1 por producto = minutos).
         int priced = 0;
+        Map<Long, List<SupplierOffer>> usableByProduct = new HashMap<>();
+        for (SupplierOffer o : offerRepo.findAllInStockActive()) {
+            usableByProduct.computeIfAbsent(o.getProduct().getId(), k -> new ArrayList<>()).add(o);
+        }
         for (Long pid : touchedProducts) {
             Product p = productRepo.findById(pid).orElse(null);
-            if (p != null) { recomputeProductPrice(p); priced++; }
+            if (p != null) {
+                recomputeProductPrice(p, usableByProduct.getOrDefault(pid, List.of()));
+                priced++;
+            }
         }
 
         summary.setProductsCreated(created);
@@ -458,7 +484,11 @@ public class ExcelImportService {
      * (recalculo por config, ganancia de consolidado, compra de tienda) dejen de derivar.
      */
     public void recomputeProductPrice(Product p) {
-        List<SupplierOffer> offers = costBasis.usableOffers(p.getId());
+        recomputeProductPrice(p, costBasis.usableOffers(p.getId()));
+    }
+
+    /** Variante con las ofertas YA cargadas (para el import masivo: evita 1 consulta por producto). */
+    public void recomputeProductPrice(Product p, List<SupplierOffer> offers) {
         if (offers.isEmpty()) {
             p.setAvailable(false);
             productRepo.save(p);

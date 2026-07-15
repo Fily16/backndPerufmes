@@ -259,7 +259,10 @@ public class DataSeederService implements CommandLineRunner {
         // eliminado permanentemente no reaparece en el proximo arranque.
         if (supplierRepo.count() > 0) return;
         if (supplierRepo.findByName("Zimaxx").isEmpty()) {
-            supplierRepo.save(new Supplier("Zimaxx", 2000.0, true));
+            Supplier z = supplierRepo.save(new Supplier("Zimaxx", 2000.0, true));
+            // La constraint va junto al seed: la migracion one-time (supplier_constraints_v1)
+            // pudo haber corrido antes y no se repite si el proveedor se borro y re-sembro.
+            constraintRepo.save(new SupplierConstraint(z, "MIN_ORDER_USD", 2000.0));
             System.out.println("Supplier creado: Zimaxx (min $2000, prioridad)");
         }
         if (supplierRepo.findByName("Magnet").isEmpty()) {

@@ -1,12 +1,13 @@
 package org.example.backendbvaberiaperfumes.service;
 
 import org.example.backendbvaberiaperfumes.model.Supplier;
-import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierConstraintRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 
@@ -20,18 +21,15 @@ public class SupplierService {
 
     private final SupplierRepository supplierRepo;
     private final SupplierOfferRepository offerRepo;
-    private final ProductRepository productRepo;
-    private final ExcelImportService importService;
     private final SupplierConstraintRepository constraintRepo;
+    private final PriceRippleService ripple;
 
     public SupplierService(SupplierRepository supplierRepo, SupplierOfferRepository offerRepo,
-                           ProductRepository productRepo, ExcelImportService importService,
-                           SupplierConstraintRepository constraintRepo) {
+                           SupplierConstraintRepository constraintRepo, PriceRippleService ripple) {
         this.supplierRepo = supplierRepo;
         this.offerRepo = offerRepo;
-        this.productRepo = productRepo;
-        this.importService = importService;
         this.constraintRepo = constraintRepo;
+        this.ripple = ripple;
     }
 
     public Supplier get(Long id) {
@@ -105,24 +103,37 @@ public class SupplierService {
         return s;
     }
 
-    /** Borrado permanente: elimina sus ofertas + restricciones + el proveedor, luego recalcula precios. */
+    /**
+     * Borrado permanente: elimina sus ofertas (en UNA sentencia) + restricciones + el proveedor.
+     * Los precios de los productos afectados se recalculan EN SEGUNDO PLANO tras el commit:
+     * con cientos de productos, hacerlo dentro de la peticion la mataba por timeout.
+     */
     @Transactional
     public void delete(Long id) {
         Supplier s = get(id);
         List<Long> affected = offerRepo.findProductIdsBySupplier(id);
-        offerRepo.deleteBySupplier_Id(id);
+        offerRepo.deleteBulkBySupplierId(id);
         constraintRepo.deleteBySupplier_Id(id);
         supplierRepo.delete(s);
-        recompute(affected);
+        rippleAfterCommit(affected);
     }
 
     private void applyRipple(Long supplierId) {
-        recompute(offerRepo.findProductIdsBySupplier(supplierId));
+        rippleAfterCommit(offerRepo.findProductIdsBySupplier(supplierId));
     }
 
-    private void recompute(List<Long> productIds) {
-        for (Long pid : productIds) {
-            productRepo.findById(pid).ifPresent(importService::recomputeProductPrice);
+    /** Lanza el recalculo asincrono DESPUES del commit (antes veria los datos viejos). */
+    private void rippleAfterCommit(List<Long> productIds) {
+        if (productIds.isEmpty()) return;
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    ripple.recomputeProducts(productIds);
+                }
+            });
+        } else {
+            ripple.recomputeProducts(productIds);
         }
     }
 }

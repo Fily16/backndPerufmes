@@ -9,6 +9,16 @@ import java.util.Optional;
 
 public interface SupplierOfferRepository extends JpaRepository<SupplierOffer, Long> {
     Optional<SupplierOffer> findBySupplier_IdAndOfferKey(Long supplierId, String offerKey);
+
+    /** Borrado masivo en UNA sentencia (el derivado borra fila por fila: lentisimo en BD remota). */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("delete from SupplierOffer o where o.supplier.id = :supplierId")
+    void deleteBulkBySupplierId(@org.springframework.data.repository.query.Param("supplierId") Long supplierId);
+
+    /** Todas las ofertas cotizables (en stock, proveedor activo, con costo) en UNA consulta. */
+    @org.springframework.data.jpa.repository.Query(
+            "select o from SupplierOffer o where o.inStock = true and o.supplier.active = true and o.costUsd is not null")
+    List<SupplierOffer> findAllInStockActive();
     List<SupplierOffer> findBySupplier_Id(Long supplierId);
     List<SupplierOffer> findByProduct_Id(Long productId);
     List<SupplierOffer> findByProduct_IdAndInStockTrue(Long productId);

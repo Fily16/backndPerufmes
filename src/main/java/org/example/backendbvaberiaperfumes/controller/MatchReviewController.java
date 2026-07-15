@@ -55,9 +55,47 @@ public class MatchReviewController {
                 : candidateRepo.findByStatusAndKindOrderByCreatedAtDesc(status, kind);
         List<Map<String, Object>> out = new ArrayList<>();
         for (MatchCandidate mc : items) {
+            // Auto-limpieza: si un producto del par ya no existe (borrado despues de encolar),
+            // el candidato es huerfano y se resuelve solo en vez de mostrarse roto.
+            if ("PENDING".equals(mc.getStatus()) && isOrphan(mc)) {
+                mc.setStatus("REJECTED");
+                mc.setResolvedAt(LocalDateTime.now());
+                mc.setResolvedBy("auto-huerfano");
+                candidateRepo.save(mc);
+                continue;
+            }
             out.add(view(mc));
         }
         return out;
+    }
+
+    private boolean isOrphan(MatchCandidate mc) {
+        if (mc.getSourceProductId() != null && productRepo.findById(mc.getSourceProductId()).isEmpty()) return true;
+        return mc.getTargetProductId() != null && productRepo.findById(mc.getTargetProductId()).isEmpty();
+    }
+
+    /**
+     * Vaciar la cola: elimina TODOS los candidatos pendientes (sin marcar rechazo, asi
+     * un re-escaneo puede volver a proponerlos) y limpia el flag "en revision" de los
+     * productos involucrados. Para empezar limpio despues de borrar proveedores/imports.
+     */
+    @DeleteMapping("/match-candidates/pending")
+    public Map<String, Object> clearPending() {
+        List<MatchCandidate> pending = candidateRepo.findByStatusOrderByCreatedAtDesc("PENDING");
+        int cleared = 0;
+        for (MatchCandidate mc : pending) {
+            if (mc.getSourceProductId() != null) {
+                productRepo.findById(mc.getSourceProductId()).ifPresent(p -> {
+                    if (Boolean.TRUE.equals(p.getMatchPending())) {
+                        p.setMatchPending(false);
+                        productRepo.save(p);
+                    }
+                });
+            }
+            candidateRepo.delete(mc);
+            cleared++;
+        }
+        return Map.of("cleared", cleared, "pending", candidateRepo.countByStatus("PENDING"));
     }
 
     @GetMapping("/match-candidates/count")

@@ -40,7 +40,13 @@ public class MatchingEngine {
     public Session openSession() {
         Session s = new Session(reviewJaccard());
         for (Product p : productRepo.findAll()) {
-            if (Boolean.TRUE.equals(p.getArchived())) continue;
+            if (Boolean.TRUE.equals(p.getArchived())) {
+                // Los archivados NO participan del matching por nombre, pero SI se indexan
+                // por GTIN: el cruce L1 debe comportarse igual que findByGtin (que no
+                // distingue archivados) para no crear un producto nuevo con GTIN duplicado.
+                s.indexGtinOnly(p);
+                continue;
+            }
             s.addProduct(p);
         }
         return s;
@@ -77,6 +83,15 @@ public class MatchingEngine {
 
         Session(double reviewJaccard) {
             this.reviewJaccard = reviewJaccard;
+        }
+
+        /** Solo indexa el GTIN (productos archivados: cuentan para L1, no para L2). */
+        public void indexGtinOnly(Product p) {
+            if (p.getGtin() != null && !p.getGtin().isBlank()) {
+                // putIfAbsent: si un producto VIVO comparte el GTIN, el vivo debe ganar
+                // sin importar el orden de carga (addProduct usa put y lo pisa).
+                gtinIndex.putIfAbsent(p.getGtin(), p);
+            }
         }
 
         /** Agrega (o re-indexa) un producto; usar tambien para los creados durante el commit. */
@@ -155,6 +170,14 @@ public class MatchingEngine {
         /** Huella de un producto ya indexado (para chequeos de atributos en L1). */
         public ProductFingerprint fingerprintOf(Long productId) {
             return fingerprints.get(productId);
+        }
+
+        /**
+         * Busqueda L1 por GTIN contra el indice EN MEMORIA (incluye los productos creados
+         * durante este mismo commit). Evita una consulta a la BD por cada fila del Excel.
+         */
+        public Product byGtin(String gtin) {
+            return gtin == null ? null : gtinIndex.get(gtin);
         }
     }
 }
