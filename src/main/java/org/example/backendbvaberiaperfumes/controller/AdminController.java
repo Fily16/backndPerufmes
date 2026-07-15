@@ -109,7 +109,23 @@ public class AdminController {
     // --- ERP: resumen de operación del consolidado activo (KPIs + ganancia líquida) ---
     @GetMapping("/operations")
     public Map<String, Object> getOperations() {
-        Consolidado active = consolidadoService.getOrCreateActive();
+        // NO usa getOrCreateActive(): abrir esta pantalla entre consolidados crearía un
+        // ABIERTO fantasma sin fechas, que reabriría los encargos y bloquearía con 409
+        // la apertura del siguiente. Sin consolidado activo, el resumen va vacío.
+        Consolidado active = consolidadoService.getActiveOrNull();
+        if (active == null) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("consolidadoId", null);
+            empty.put("orders", 0);
+            empty.put("lima", 0);
+            empty.put("provincia", 0);
+            empty.put("units", 0);
+            empty.put("revenuePen", 0.0);
+            empty.put("bySeller", Map.of());
+            empty.put("profitPen", 0.0);
+            empty.put("message", "No hay consolidado abierto.");
+            return empty;
+        }
         List<Order> orders = consolidadoService.getOrdersByConsolidado(active.getId());
         // Solo pedidos ACEPTADOS (separados en adelante); pendientes y rechazados no cuentan.
         java.util.Set<String> accepted = java.util.Set.of("SEPARADO", "PENDIENTE_RESTO", "PAGADO", "VERIFICADO");
@@ -408,6 +424,48 @@ public class AdminController {
     public ResponseEntity<Order> createStockPurchase(@RequestBody StockPurchaseRequest request) {
         return ResponseEntity.ok(consolidadoService.createStockPurchase(request));
     }
+
+    // --- Consolidados v2: apertura programada, plazo e imagen del aviso ---
+
+    /** Abre (o programa) un consolidado nuevo. 409 si ya hay uno ABIERTO/PROGRAMADO. */
+    @PostMapping("/consolidados/open")
+    public ResponseEntity<?> openConsolidado(@RequestBody Map<String, Object> body) {
+        try {
+            Consolidado c = consolidadoService.openConsolidado(
+                    asString(body.get("title")),
+                    asString(body.get("description")),
+                    asLong(body.get("startAtMs")),
+                    asLong(body.get("endsAtMs")),
+                    asLong(body.get("imageMediaId")));
+            return ResponseEntity.ok(c);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    /** Configura plazo/titulo/descripcion/imagen del consolidado ABIERTO o PROGRAMADO. */
+    @PutMapping("/consolidados/{id}/schedule")
+    public ResponseEntity<?> updateConsolidadoSchedule(@PathVariable Long id,
+                                                       @RequestBody Map<String, Object> body) {
+        try {
+            Consolidado c = consolidadoService.updateSchedule(id,
+                    asString(body.get("title")),
+                    asString(body.get("description")),
+                    asLong(body.get("startAtMs")),
+                    asLong(body.get("endsAtMs")),
+                    asLong(body.get("imageMediaId")));
+            return ResponseEntity.ok(c);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    private static String asString(Object v) { return v != null ? String.valueOf(v) : null; }
+    private static Long asLong(Object v) { return v instanceof Number n ? n.longValue() : null; }
 
     // --- Enable Merchandise (after shipment arrives in Peru) ---
     @PostMapping("/enable-merchandise/{consolidadoId}")

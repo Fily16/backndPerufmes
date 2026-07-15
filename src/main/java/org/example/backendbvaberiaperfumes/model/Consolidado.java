@@ -11,6 +11,7 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -66,6 +67,33 @@ public class Consolidado {
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    // --- Programacion y aviso publico (consolidados v2) ---
+    // Instant (timestamptz) a proposito: Render corre en UTC y el admin ingresa hora de Lima;
+    // LocalDateTime aqui seria un bug latente de 5 horas en el cierre automatico.
+
+    /** Titulo del aviso publico ("Consolidado de Julio"). */
+    @Column(length = 160)
+    private String title;
+
+    @Column(length = 2000)
+    private String description;
+
+    /** Apertura programada. Si es futura, el consolidado nace PROGRAMADO y el scheduler lo abre. */
+    @Column(name = "start_at")
+    private Instant startAt;
+
+    /** Cierre programado: alimenta el countdown publico y el cierre automatico. Null = sin plazo. */
+    @Column(name = "ends_at")
+    private Instant endsAt;
+
+    /** true si el admin movio endsAt hacia adelante estando ABIERTO ("¡Plazo extendido!"). */
+    @Column(name = "is_extended")
+    private Boolean extended = false;
+
+    /** Imagen promocional del aviso (galeria MediaImage). */
+    @Column(name = "image_media_id")
+    private Long imageMediaId;
 
     public Consolidado() {
     }
@@ -219,6 +247,54 @@ public class Consolidado {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
+    }
+
+    public Instant getStartAt() {
+        return startAt;
+    }
+
+    public void setStartAt(Instant startAt) {
+        this.startAt = startAt;
+    }
+
+    public Instant getEndsAt() {
+        return endsAt;
+    }
+
+    public void setEndsAt(Instant endsAt) {
+        this.endsAt = endsAt;
+    }
+
+    public Boolean getExtended() {
+        return extended;
+    }
+
+    public void setExtended(Boolean extended) {
+        this.extended = extended;
+    }
+
+    public Long getImageMediaId() {
+        return imageMediaId;
+    }
+
+    public void setImageMediaId(Long imageMediaId) {
+        this.imageMediaId = imageMediaId;
     }
 
     @Override

@@ -48,6 +48,11 @@ public class ConsolidadoService {
 
     private static double nz(Double v) { return v != null ? v : 0; }
 
+    /**
+     * LEGACY (solo flujos admin): el mas nuevo ABIERTO o crea uno vacio.
+     * El publico ya NO pasa por aqui: /current y /active son de solo lectura;
+     * los consolidados nuevos se abren explicitamente con openConsolidado().
+     */
     public Consolidado getOrCreateActive() {
         return consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
                 .orElseGet(() -> {
@@ -55,6 +60,123 @@ public class ConsolidadoService {
                     c.setStatus("ABIERTO");
                     return consolidadoRepo.save(c);
                 });
+    }
+
+    // =====================================================================
+    // Ciclo de vida programado (consolidados v2)
+    // =====================================================================
+
+    /** ¿Acepta pedidos por encargo? ABIERTO y (sin plazo o plazo vigente). */
+    public boolean isOpenForOrders(Consolidado c) {
+        if (c == null || !"ABIERTO".equals(c.getStatus())) return false;
+        return c.getEndsAt() == null || c.getEndsAt().isAfter(java.time.Instant.now());
+    }
+
+    /**
+     * Estado publico para el aviso/countdown. NUNCA crea filas.
+     * Prioriza ABIERTO/PROGRAMADO; si no hay, devuelve el mas nuevo de cualquier
+     * status (para poder decir "cerrado, espera el proximo").
+     */
+    public ConsolidadoPublicDTO getCurrentPublic() {
+        Consolidado c = consolidadoRepo
+                .findFirstByStatusInOrderByCreatedAtDesc(List.of("ABIERTO", "PROGRAMADO"))
+                .orElseGet(() -> consolidadoRepo.findFirstByOrderByCreatedAtDesc().orElse(null));
+        ConsolidadoPublicDTO dto = new ConsolidadoPublicDTO();
+        dto.serverNowMs = System.currentTimeMillis();
+        if (c == null) {
+            dto.status = "NONE";
+            dto.open = false;
+            return dto;
+        }
+        dto.id = c.getId();
+        dto.status = c.getStatus();
+        dto.title = c.getTitle();
+        dto.description = c.getDescription();
+        dto.startAtMs = c.getStartAt() != null ? c.getStartAt().toEpochMilli() : null;
+        dto.endsAtMs = c.getEndsAt() != null ? c.getEndsAt().toEpochMilli() : null;
+        dto.extended = Boolean.TRUE.equals(c.getExtended());
+        dto.imageMediaId = c.getImageMediaId();
+        dto.open = isOpenForOrders(c);
+        return dto;
+    }
+
+    /**
+     * Abre (o programa) un consolidado nuevo con fechas, titulo e imagen.
+     * Falla si ya existe uno ABIERTO o PROGRAMADO.
+     */
+    @Transactional
+    public Consolidado openConsolidado(String title, String description,
+                                       Long startAtMs, Long endsAtMs, Long imageMediaId) {
+        if (consolidadoRepo.countByStatusIn(List.of("ABIERTO", "PROGRAMADO")) > 0) {
+            throw new IllegalStateException("Ya existe un consolidado abierto o programado.");
+        }
+        if (endsAtMs == null) {
+            throw new IllegalArgumentException("La fecha de cierre es obligatoria.");
+        }
+        java.time.Instant now = java.time.Instant.now();
+        java.time.Instant startAt = startAtMs != null ? java.time.Instant.ofEpochMilli(startAtMs) : now;
+        java.time.Instant endsAt = java.time.Instant.ofEpochMilli(endsAtMs);
+        if (!endsAt.isAfter(startAt)) {
+            throw new IllegalArgumentException("El cierre debe ser posterior a la apertura.");
+        }
+        if (endsAt.isBefore(now)) {
+            throw new IllegalArgumentException("El cierre no puede estar en el pasado.");
+        }
+        Consolidado c = new Consolidado();
+        c.setTitle(title);
+        c.setDescription(description);
+        c.setStartAt(startAt);
+        c.setEndsAt(endsAt);
+        c.setImageMediaId(imageMediaId);
+        c.setExtended(false);
+        if (startAt.isAfter(now)) {
+            c.setStatus("PROGRAMADO");
+        } else {
+            c.setStatus("ABIERTO");
+            c.setOpenDate(LocalDateTime.now());
+        }
+        return consolidadoRepo.save(c);
+    }
+
+    /**
+     * Configura plazo/titulo/imagen de un consolidado ABIERTO o PROGRAMADO.
+     * Si esta ABIERTO y el nuevo cierre es POSTERIOR al anterior -> plazo extendido
+     * (el aviso publico cambia a "¡Plazo extendido! Aprovecha").
+     */
+    @Transactional
+    public Consolidado updateSchedule(Long id, String title, String description,
+                                      Long startAtMs, Long endsAtMs, Long imageMediaId) {
+        Consolidado c = getById(id);
+        if (!"ABIERTO".equals(c.getStatus()) && !"PROGRAMADO".equals(c.getStatus())) {
+            throw new IllegalStateException("Solo se puede configurar un consolidado abierto o programado.");
+        }
+        if (title != null) c.setTitle(title.isBlank() ? null : title.trim());
+        if (description != null) c.setDescription(description.isBlank() ? null : description.trim());
+        if (imageMediaId != null) c.setImageMediaId(imageMediaId <= 0 ? null : imageMediaId);
+        if (startAtMs != null && "PROGRAMADO".equals(c.getStatus())) {
+            c.setStartAt(java.time.Instant.ofEpochMilli(startAtMs));
+        }
+        if (endsAtMs != null) {
+            java.time.Instant newEnds = java.time.Instant.ofEpochMilli(endsAtMs);
+            if ("ABIERTO".equals(c.getStatus()) && c.getEndsAt() != null && newEnds.isAfter(c.getEndsAt())) {
+                c.setExtended(true);
+            }
+            c.setEndsAt(newEnds);
+        }
+        if (c.getStartAt() != null && c.getEndsAt() != null && !c.getEndsAt().isAfter(c.getStartAt())) {
+            throw new IllegalArgumentException("El cierre debe ser posterior a la apertura.");
+        }
+        return consolidadoRepo.save(c);
+    }
+
+    /** PROGRAMADO -> ABIERTO (lo invoca el scheduler al llegar la fecha de apertura). */
+    @Transactional
+    public Consolidado activateScheduled(Long id) {
+        Consolidado c = getById(id);
+        if (!"PROGRAMADO".equals(c.getStatus())) return c;
+        c.setStatus("ABIERTO");
+        c.setOpenDate(LocalDateTime.now());
+        return consolidadoRepo.save(c);
     }
 
     public Consolidado getActiveOrNull() {
@@ -76,6 +198,12 @@ public class ConsolidadoService {
     public Order createOrder(OrderRequest request) {
         Order order;
 
+        // 0. Resolver el canal PRIMERO: el gating del consolidado solo aplica a pedidos
+        //    por encargo (CONSOLIDADO). Los de STOCK/promos nunca dependen del plazo.
+        //    Un pedido que trae promociones (packs) es siempre canal STOCK.
+        boolean hasPromos = request.getPromotions() != null && !request.getPromotions().isEmpty();
+        String channel = (hasPromos || "STOCK".equalsIgnoreCase(request.getChannel())) ? "STOCK" : "CONSOLIDADO";
+
         // 1. ¿Agregar a un pedido existente?
         if (request.getExistingOrderCode() != null && !request.getExistingOrderCode().trim().isEmpty()) {
             order = orderRepo.findByOrderCode(request.getExistingOrderCode().trim())
@@ -86,7 +214,20 @@ public class ConsolidadoService {
                 throw new IllegalArgumentException("El celular debe coincidir con el pedido original.");
             }
 
-            if (!order.getConsolidado().getStatus().equals("ABIERTO")) {
+            // El canal de un pedido queda fijado al crearlo y NO se puede cambiar al
+            // acumular: si no, un cliente podria mandar channel=STOCK sobre su pedido
+            // por encargo y (a) saltarse el candado del plazo y (b) sacar del lote un
+            // pedido ya pagado (los computos del consolidado ignoran el canal STOCK).
+            if (order.getChannel() != null && !order.getChannel().equals(channel)) {
+                throw new IllegalArgumentException(
+                        "Este pedido es de " + ("STOCK".equals(order.getChannel()) ? "entrega inmediata" : "encargo")
+                                + ". Haz un pedido aparte para el otro tipo de compra.");
+            }
+            channel = order.getChannel() != null ? order.getChannel() : channel;
+
+            // El candado de plazo aplica SOLO al canal por encargo: agregar a un pedido de
+            // stock sigue permitido aunque el consolidado ya haya cerrado.
+            if ("CONSOLIDADO".equals(channel) && !isOpenForOrders(order.getConsolidado())) {
                 throw new IllegalArgumentException("El consolidado de este pedido ya fue cerrado.");
             }
 
@@ -97,11 +238,23 @@ public class ConsolidadoService {
 
         } else {
             // 2. Pedido totalmente nuevo
-            Consolidado active = consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
-                    .orElseThrow(() -> new RuntimeException("No hay consolidado abierto."));
+            Consolidado anchor;
+            if ("CONSOLIDADO".equals(channel)) {
+                // Por encargo: exige consolidado ABIERTO con plazo vigente (fuente de verdad).
+                anchor = consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO")
+                        .filter(this::isOpenForOrders)
+                        .orElseThrow(() -> new IllegalArgumentException(
+                                "El consolidado está cerrado. Espera la apertura del próximo."));
+            } else {
+                // STOCK: venta inmediata. Se ancla al consolidado mas nuevo SIN importar su
+                // status (los computos del consolidado ya excluyen el canal STOCK); un FK null
+                // lo haria invisible en el panel admin.
+                anchor = consolidadoRepo.findFirstByOrderByCreatedAtDesc()
+                        .orElseThrow(() -> new RuntimeException("No hay consolidado registrado."));
+            }
 
             order = new Order();
-            order.setConsolidado(active);
+            order.setConsolidado(anchor);
             order.setClientName(request.getClientName());
             order.setClientPhone(request.getClientPhone());
             order.setYapeReference(request.getYapeReference());
@@ -120,10 +273,6 @@ public class ConsolidadoService {
         if (request.getShippingDepartment() != null) order.setShippingDepartment(request.getShippingDepartment());
         if (request.getShippingAgency() != null) order.setShippingAgency(request.getShippingAgency());
 
-        // Canal elegido por el CLIENTE (no inferido). El precio sale del canal, no se confía en el cliente.
-        // Un pedido que trae promociones (packs) es siempre canal STOCK.
-        boolean hasPromos = request.getPromotions() != null && !request.getPromotions().isEmpty();
-        String channel = (hasPromos || "STOCK".equalsIgnoreCase(request.getChannel())) ? "STOCK" : "CONSOLIDADO";
         order.setChannel(channel);
 
         // 4. Agregar los nuevos productos (y fusionarlos si ya existen)
@@ -431,7 +580,10 @@ public class ConsolidadoService {
             throw new IllegalArgumentException("El celular no coincide con el pedido.");
         }
 
-        if (!"ABIERTO".equals(order.getConsolidado().getStatus())) {
+        // Mismo candado que para crear, y con la misma excepcion: solo los pedidos por
+        // encargo dependen del plazo. Un pedido de stock se ancla al consolidado mas
+        // nuevo (aunque este cerrado), asi que bloquearlo por el plazo seria un bug.
+        if ("CONSOLIDADO".equals(order.getChannel()) && !isOpenForOrders(order.getConsolidado())) {
             throw new IllegalArgumentException("El consolidado ya fue cerrado, no se puede editar.");
         }
 
@@ -559,7 +711,12 @@ public class ConsolidadoService {
 
     @Transactional
     public Order createStockPurchase(StockPurchaseRequest request) {
-        Consolidado active = getOrCreateActive();
+        // La compra de tienda tambien se hace despues del cierre (antes de ENTREGADO).
+        // NO usa getOrCreateActive(): crearia un ABIERTO fantasma sin fechas.
+        Consolidado active = consolidadoRepo
+                .findFirstByStatusInOrderByCreatedAtDesc(List.of("ABIERTO", "CERRADO"))
+                .orElseThrow(() -> new IllegalStateException(
+                        "No hay consolidado activo para la compra de tienda. Abre uno primero."));
 
         Order order = new Order();
         order.setConsolidado(active);

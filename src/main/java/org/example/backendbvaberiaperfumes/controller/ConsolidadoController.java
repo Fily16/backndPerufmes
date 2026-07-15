@@ -1,5 +1,6 @@
 package org.example.backendbvaberiaperfumes.controller;
 
+import org.example.backendbvaberiaperfumes.dto.ConsolidadoPublicDTO;
 import org.example.backendbvaberiaperfumes.dto.FullBreakdownResponse;
 import org.example.backendbvaberiaperfumes.model.Consolidado;
 import org.example.backendbvaberiaperfumes.model.Order;
@@ -19,11 +20,20 @@ public class ConsolidadoController {
         this.consolidadoService = consolidadoService;
     }
 
-    // Public: get active consolidado info
+    /**
+     * Publico: estado del consolidado para el aviso/countdown de la tienda.
+     * Solo lectura (nunca crea) y con fechas en epoch millis + hora del servidor.
+     */
+    @GetMapping("/current")
+    public ResponseEntity<ConsolidadoPublicDTO> getCurrent() {
+        return ResponseEntity.ok(consolidadoService.getCurrentPublic());
+    }
+
+    // Public: get active consolidado info (solo lectura; antes CREABA en cada visita anonima)
     @GetMapping("/active")
     public ResponseEntity<Consolidado> getActive() {
-        Consolidado active = consolidadoService.getOrCreateActive();
-        return ResponseEntity.ok(active);
+        Consolidado active = consolidadoService.getActiveOrNull();
+        return active != null ? ResponseEntity.ok(active) : ResponseEntity.notFound().build();
     }
 
     // Admin: list all consolidados
@@ -56,12 +66,8 @@ public class ConsolidadoController {
         return ResponseEntity.ok(consolidadoService.getFullBreakdown(id));
     }
 
-    // Admin: create new consolidado
-    @PostMapping
-    public ResponseEntity<Consolidado> createNew() {
-        Consolidado c = consolidadoService.getOrCreateActive();
-        return ResponseEntity.ok(c);
-    }
+    // El POST publico de creacion se elimino: los consolidados se abren explicitamente
+    // desde POST /api/admin/consolidados/open (con fechas, titulo e imagen).
 
     // Admin: delete consolidado (only non-ABIERTO)
     @DeleteMapping("/{id}")

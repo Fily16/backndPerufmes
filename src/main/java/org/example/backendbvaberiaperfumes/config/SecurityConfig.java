@@ -37,6 +37,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/products/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/consolidados/active").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/consolidados/current").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/media/*").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/orders").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/orders/code/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/public").permitAll()
@@ -44,6 +46,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/retail/form-sale").permitAll()
                         .requestMatchers(HttpMethod.PUT, "/api/orders/edit-by-client").permitAll()
                         .requestMatchers("/h2-console/**").permitAll()
+                        // El resto de /api/consolidados (lista con ganancias, pedidos con datos
+                        // de clientes) es SOLO admin: antes quedaba publico por el anyRequest().
+                        .requestMatchers("/api/consolidados/**").authenticated()
                         // Admin endpoints
                         .requestMatchers("/api/admin/**").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/api/**").authenticated()
