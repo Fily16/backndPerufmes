@@ -36,3 +36,19 @@ build/
 secret-mail.properties
 data/
 apify/
+
+### Archivos de trabajo en la raíz (listas de proveedores, scraping, capturas) ###
+### Nunca commitear: contienen precios de proveedores y material local.        ###
+provedores/
+resultados/
+imagenes/
+imagenes de referencia/
+tools/
+*.xlsx
+*.csv
+*.png
+*.jpeg
+*.jpg
+ebay_debug.html
+dataset_*.json
+cuando carga, or alguna exztra;a ra.txt
