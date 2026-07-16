@@ -2,6 +2,7 @@ package org.example.backendbvaberiaperfumes.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.example.backendbvaberiaperfumes.dto.ImageCandidate;
 import org.example.backendbvaberiaperfumes.model.AppConfig;
 import org.example.backendbvaberiaperfumes.repository.AppConfigRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -103,8 +104,17 @@ public class ApifyImageService {
     /**
      * queriesByIdx: idx de fila -> texto de consulta ("marca nombre 100ml ... perfume").
      * Devuelve idx -> imageUrl (solo las filas para las que se encontro una foto relevante).
+     * La "mejor" es SIEMPRE la primera del ranking de candidatas (misma logica que la revision visual).
      */
     public Map<Integer, String> fetchImages(Map<Integer, String> queriesByIdx) throws Exception {
+        return firstOf(fetchImageCandidates(queriesByIdx));
+    }
+
+    /**
+     * Igual que fetchImages pero devuelve las N candidatas FINALES por fila (idx -> ranking),
+     * ya filtradas de origenes bloqueados y ordenadas por relevancia. N = effectiveResults().
+     */
+    public Map<Integer, List<ImageCandidate>> fetchImageCandidates(Map<Integer, String> queriesByIdx) throws Exception {
         if (!configured()) {
             throw new IllegalStateException("Falta configurar APIFY_TOKEN en las variables de entorno.");
         }
@@ -142,17 +152,26 @@ public class ApifyImageService {
             }
         }
 
-        // Elegir la mejor foto de cada consulta.
-        Map<String, String> bestByQuery = new HashMap<>();
+        // Rankear las candidatas de cada consulta.
+        Map<String, List<ImageCandidate>> rankedByQuery = new HashMap<>();
         for (Map.Entry<String, List<JsonNode>> e : byQuery.entrySet()) {
-            String best = pickBest(e.getKey(), e.getValue());
-            if (best != null) bestByQuery.put(e.getKey(), best);
+            List<ImageCandidate> ranked = rankCandidates(e.getKey(), e.getValue());
+            if (!ranked.isEmpty()) rankedByQuery.put(e.getKey(), ranked);
         }
 
-        Map<Integer, String> out = new LinkedHashMap<>();
+        Map<Integer, List<ImageCandidate>> out = new LinkedHashMap<>();
         for (Map.Entry<Integer, String> e : queriesByIdx.entrySet()) {
-            String img = bestByQuery.get(e.getValue());
-            if (img != null) out.put(e.getKey(), img);
+            List<ImageCandidate> ranked = rankedByQuery.get(e.getValue());
+            if (ranked != null) out.put(e.getKey(), ranked);
+        }
+        return out;
+    }
+
+    /** idx -> primera candidata del ranking (o nada si la fila no tuvo candidatas). */
+    private static Map<Integer, String> firstOf(Map<Integer, List<ImageCandidate>> candidates) {
+        Map<Integer, String> out = new LinkedHashMap<>();
+        for (Map.Entry<Integer, List<ImageCandidate>> e : candidates.entrySet()) {
+            if (!e.getValue().isEmpty()) out.put(e.getKey(), e.getValue().get(0).url);
         }
         return out;
     }
@@ -163,6 +182,11 @@ public class ApifyImageService {
      * mejor coincide (thumbnailUrl). Devuelve idx -> imageUrl.
      */
     public Map<Integer, String> fetchFragranticaImages(Map<Integer, String> queriesByIdx) throws Exception {
+        return firstOf(fetchFragranticaCandidates(queriesByIdx));
+    }
+
+    /** Fragrantica con ranking: por perfume, los matches con suficiente coincidencia ordenados por score. */
+    public Map<Integer, List<ImageCandidate>> fetchFragranticaCandidates(Map<Integer, String> queriesByIdx) throws Exception {
         if (!configured()) {
             throw new IllegalStateException("Falta configurar APIFY_TOKEN en las variables de entorno.");
         }
@@ -198,7 +222,7 @@ public class ApifyImageService {
                     + (b == null ? "" : b.substring(0, Math.min(300, b.length()))));
         }
 
-        // Resultados: nombre+marca -> tokens, y su thumbnailUrl.
+        // Resultados: nombre+marca -> tokens, su imagen y su titulo.
         JsonNode arr = mapper.readTree(resp.body());
         List<Object[]> results = new ArrayList<>();
         if (arr.isArray()) {
@@ -206,26 +230,31 @@ public class ApifyImageService {
                 String img = it.path("thumbnailUrl").asText(null);
                 if (img == null || img.isBlank()) img = it.path("imageUrl").asText(null);
                 if (img == null || img.isBlank()) continue;
-                Set<String> rt = tokensOf(it.path("brand").asText("") + " " + it.path("name").asText(""));
-                results.add(new Object[]{rt, img});
+                String label = (it.path("brand").asText("") + " " + it.path("name").asText("")).trim();
+                results.add(new Object[]{tokensOf(label), img, label});
             }
         }
 
-        // Emparejar cada perfume con el resultado de mayor coincidencia de nombre.
-        Map<Integer, String> out = new LinkedHashMap<>();
+        // Emparejar cada perfume con TODOS los resultados que superan el umbral, ordenados por score.
+        Map<Integer, List<ImageCandidate>> out = new LinkedHashMap<>();
+        int max = effectiveResults();
         for (Map.Entry<Integer, Set<String>> e : tokensByIdx.entrySet()) {
             Set<String> qt = e.getValue();
             int need = Math.min(2, Math.max(1, qt.size()));
-            int bestScore = need - 1;
-            String bestImg = null;
+            List<ImageCandidate> cands = new ArrayList<>();
+            Set<String> seen = new HashSet<>();
             for (Object[] r : results) {
                 @SuppressWarnings("unchecked")
                 Set<String> rt = (Set<String>) r[0];
+                String img = (String) r[1];
+                if (!seen.add(img)) continue;
                 int score = 0;
                 for (String t : qt) if (rt.contains(t)) score++;
-                if (score > bestScore) { bestScore = score; bestImg = (String) r[1]; }
+                if (score >= need) cands.add(new ImageCandidate(img, "fragrantica.com", (String) r[2], score));
             }
-            if (bestImg != null) out.put(e.getKey(), bestImg);
+            cands.sort((a, b) -> Integer.compare(b.score, a.score));
+            if (cands.size() > max) cands = new ArrayList<>(cands.subList(0, max));
+            if (!cands.isEmpty()) out.put(e.getKey(), cands);
         }
         return out;
     }
@@ -246,6 +275,11 @@ public class ApifyImageService {
      * Query = marca + nombre + ml (sin "perfume" ni la unidad), ej. "AURAA DESIRE DESERT DEW 100".
      */
     public Map<Integer, String> fetchBingImages(Map<Integer, String> queriesByIdx) throws Exception {
+        return firstOf(fetchBingCandidates(queriesByIdx));
+    }
+
+    /** Bing con ranking: candidatas en el orden del buscador (la primera es la que elegía el flujo clásico). */
+    public Map<Integer, List<ImageCandidate>> fetchBingCandidates(Map<Integer, String> queriesByIdx) throws Exception {
         if (!configured()) {
             throw new IllegalStateException("Falta configurar APIFY_TOKEN en las variables de entorno.");
         }
@@ -272,59 +306,28 @@ public class ApifyImageService {
             futures.put(e.getKey(), http.sendAsync(req, HttpResponse.BodyHandlers.ofString()));
         }
 
-        Map<Integer, String> out = new LinkedHashMap<>();
+        Map<Integer, List<ImageCandidate>> out = new LinkedHashMap<>();
         for (Map.Entry<Integer, CompletableFuture<HttpResponse<String>>> e : futures.entrySet()) {
             try {
                 HttpResponse<String> resp = e.getValue().join();
                 if (resp.statusCode() >= 300) continue;
                 JsonNode arr = mapper.readTree(resp.body());
+                List<ImageCandidate> cands = new ArrayList<>();
+                Set<String> seen = new HashSet<>();
                 if (arr.isArray()) {
                     for (JsonNode it : arr) {
                         String img = it.path("imageUrl").asText(null);
-                        if (img != null && !img.isBlank()) { out.put(e.getKey(), img); break; }
+                        if (img == null || img.isBlank() || !seen.add(img)) continue;
+                        String origin = it.path("origin").asText(it.path("hostPageUrl").asText(""));
+                        // score descendente por posicion: la primera del buscador manda
+                        cands.add(new ImageCandidate(img, origin, it.path("title").asText(""), maxResults - cands.size()));
+                        if (cands.size() >= maxResults) break;
                     }
                 }
+                if (!cands.isEmpty()) out.put(e.getKey(), cands);
             } catch (Exception ignored) { /* omite esa fila */ }
         }
         return out;
-    }
-
-    /**
-     * Detecta imagenes ROTAS: revisa cada URL por el proxy wsrv (en paralelo) y marca como rota
-     * si no carga (error / 404 / JSON) o si la imagen es diminuta (placeholder tipo "no permission").
-     * Conservador para NO marcar buenas como rotas: una foto real siempre pasa (>=1500 bytes, image/*).
-     */
-    public Set<Long> findBroken(Map<Long, String> idToUrl) {
-        Set<Long> broken = new LinkedHashSet<>();
-        if (idToUrl == null || idToUrl.isEmpty()) return broken;
-        List<Map.Entry<Long, String>> all = new ArrayList<>(idToUrl.entrySet());
-        int i = 0;
-        while (i < all.size()) {
-            List<Map.Entry<Long, String>> window = all.subList(i, Math.min(i + 40, all.size()));
-            Map<Long, CompletableFuture<HttpResponse<byte[]>>> futures = new LinkedHashMap<>();
-            for (Map.Entry<Long, String> e : window) {
-                String u = e.getValue();
-                if (u == null || u.isBlank()) { broken.add(e.getKey()); continue; }
-                String check = "https://images.weserv.nl/?url=" + URLEncoder.encode(u, StandardCharsets.UTF_8)
-                        + "&w=200&h=200&output=jpg";
-                HttpRequest req = HttpRequest.newBuilder(URI.create(check))
-                        .timeout(Duration.ofSeconds(20)).GET().build();
-                futures.put(e.getKey(), http.sendAsync(req, HttpResponse.BodyHandlers.ofByteArray()));
-            }
-            for (Map.Entry<Long, CompletableFuture<HttpResponse<byte[]>>> e : futures.entrySet()) {
-                try {
-                    HttpResponse<byte[]> resp = e.getValue().join();
-                    String ct = resp.headers().firstValue("content-type").orElse("");
-                    int len = resp.body() != null ? resp.body().length : 0;
-                    boolean ok = resp.statusCode() < 400 && ct.startsWith("image/") && len >= 1500;
-                    if (!ok) broken.add(e.getKey());
-                } catch (Exception ex) {
-                    broken.add(e.getKey());
-                }
-            }
-            i += 40;
-        }
-        return broken;
     }
 
     /** Limpia una consulta para Bing: quita "perfume" y la unidad del tamaño (deja el numero). */
@@ -336,25 +339,31 @@ public class ApifyImageService {
     }
 
     /**
-     * De los resultados de una consulta, devuelve la imagen mas relevante.
-     * Acepta cualquier resultado (no de redes/noticias) cuyo titulo tenga AL MENOS 1 palabra
-     * del nombre del perfume; elige el de mayor coincidencia. null solo si todo fue basura.
+     * De los resultados de una consulta, devuelve las candidatas FINALES ordenadas:
+     * descarta origenes de redes/noticias/spam y resultados cuyo titulo no tenga NI UNA
+     * palabra del nombre del perfume (misma regla del antiguo pickBest: basura fuera),
+     * puntua por coincidencias y ordena por score (estable: a igual score, orden del
+     * buscador). Trunca a effectiveResults() — esas son las "N finales" que ve el admin.
      */
-    private String pickBest(String query, List<JsonNode> results) {
+    public List<ImageCandidate> rankCandidates(String query, List<JsonNode> results) {
         Set<String> qtokens = tokensOf(query);
-        int bestScore = 0; // >=1 coincidencia del nombre en el titulo
-        String best = null;
+        List<ImageCandidate> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
         for (JsonNode it : results) {
             String img = it.path("imageUrl").asText(null);
-            if (img == null || img.isBlank()) continue;
+            if (img == null || img.isBlank() || !seen.add(img)) continue;
             String origin = it.path("origin").asText("").toLowerCase();
             if (isBlocked(origin)) continue;
-            String title = norm(it.path("title").asText(""));
+            String rawTitle = it.path("title").asText("");
+            String title = norm(rawTitle);
             int score = 0;
             for (String t : qtokens) if (title.contains(t)) score++;
-            if (score > bestScore) { bestScore = score; best = img; }
+            if (score < 1) continue;
+            out.add(new ImageCandidate(img, origin, rawTitle, score));
         }
-        return best;
+        out.sort((a, b) -> Integer.compare(b.score, a.score));
+        int max = effectiveResults();
+        return out.size() > max ? new ArrayList<>(out.subList(0, max)) : out;
     }
 
     private boolean isBlocked(String origin) {

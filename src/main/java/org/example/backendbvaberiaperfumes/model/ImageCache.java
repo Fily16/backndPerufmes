@@ -23,6 +23,13 @@ public class ImageCache {
     @Column(name = "image_url", columnDefinition = "TEXT")
     private String imageUrl;
 
+    /**
+     * Ranking completo de candidatas (JSON de List<ImageCandidate>) de la última búsqueda.
+     * Nullable: las filas anteriores a esta columna solo tienen imageUrl (1 candidata).
+     */
+    @Column(name = "candidates_json", columnDefinition = "TEXT")
+    private String candidatesJson;
+
     @Column(name = "fetched_at")
     private LocalDateTime fetchedAt = LocalDateTime.now();
 
@@ -40,6 +47,8 @@ public class ImageCache {
     public void setCacheKey(String cacheKey) { this.cacheKey = cacheKey; }
     public String getImageUrl() { return imageUrl; }
     public void setImageUrl(String imageUrl) { this.imageUrl = imageUrl; }
+    public String getCandidatesJson() { return candidatesJson; }
+    public void setCandidatesJson(String candidatesJson) { this.candidatesJson = candidatesJson; }
     public LocalDateTime getFetchedAt() { return fetchedAt; }
     public void setFetchedAt(LocalDateTime fetchedAt) { this.fetchedAt = fetchedAt; }
 }

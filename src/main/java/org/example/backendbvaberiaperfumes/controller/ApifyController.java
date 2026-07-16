@@ -57,6 +57,54 @@ public class ApifyController {
         }
     }
 
+    /**
+     * Igual que /images pero devuelve las N candidatas FINALES por fila (el mismo ranking
+     * del algoritmo, para la revisión visual): { "123": [{url,origin,title,score}, ...], ... }
+     */
+    @PostMapping("/candidates")
+    public ResponseEntity<?> candidates(@RequestBody ImageSearchRequest req) {
+        try {
+            return ResponseEntity.ok(enrich.enrichCandidates(
+                    req != null ? req.items : null,
+                    req != null ? req.source : null,
+                    req != null && req.force));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("message",
+                    "Error consultando Apify: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())));
+        }
+    }
+
+    /**
+     * Guarda la imagen elegida (auto o manual) para un producto y la deja cacheada como
+     * definitiva para su UPC/consulta — así una re-búsqueda sin force no la pisa.
+     */
+    @PostMapping("/choose")
+    public ResponseEntity<?> choose(@RequestBody Map<String, Object> body) {
+        Long productId;
+        try { productId = Long.valueOf(String.valueOf(body.get("productId"))); }
+        catch (NumberFormatException e) { return ResponseEntity.badRequest().body(Map.of("message", "productId inválido.")); }
+        String url = body.get("imageUrl") != null ? String.valueOf(body.get("imageUrl")).trim() : "";
+        if (url.isBlank()) return ResponseEntity.badRequest().body(Map.of("message", "Falta imageUrl."));
+
+        Product p = productRepo.findById(productId).orElse(null);
+        if (p == null) return ResponseEntity.notFound().build();
+        p.setImageUrl(url);
+        productRepo.save(p);
+        enrich.rememberChoice(cacheKeyFor(p), url);
+        return ResponseEntity.ok(row(p));
+    }
+
+    /** Misma clave de caché que usa el flujo de búsqueda: UPC si hay; si no, la consulta estándar. */
+    private String cacheKeyFor(Product p) {
+        if (p.getGtin() != null && !p.getGtin().isBlank()) return p.getGtin().trim();
+        String ml = p.getMl() != null ? p.getMl() + "ml" : "";
+        String q = (Objects.toString(p.getBrand(), "") + " " + Objects.toString(p.getName(), "") + " " + ml + " perfume")
+                .replaceAll("\\s+", " ").trim();
+        return q.isBlank() ? null : "Q:" + q.toLowerCase();
+    }
+
     /** Limpia el caché de imágenes (para re-buscar desde cero, ej. tras mejorar la búsqueda). */
     @DeleteMapping("/cache")
     public ResponseEntity<?> clearCache() {
@@ -102,12 +150,11 @@ public class ApifyController {
         return ResponseEntity.ok(m);
     }
 
-    /** Productos del catálogo (de un proveedor) que NO tienen foto — para rellenarlas. */
+    /** Productos que NO tienen foto — para rellenarlas. Sin supplierId = TODO el catálogo. */
     @GetMapping("/missing")
-    public List<Map<String, Object>> missing(@RequestParam Long supplierId) {
-        List<Long> pids = offerRepo.findProductIdsBySupplier(supplierId);
+    public List<Map<String, Object>> missing(@RequestParam(required = false) Long supplierId) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (Product p : productRepo.findAllById(pids)) {
+        for (Product p : productsFor(supplierId)) {
             boolean noImg = p.getImageUrl() == null || p.getImageUrl().isBlank();
             if (!noImg || Boolean.TRUE.equals(p.getArchived())) continue;
             out.add(row(p));
@@ -115,25 +162,26 @@ public class ApifyController {
         return out;
     }
 
-    /** Productos (de un proveedor) cuya foto está ROTA (no carga / placeholder), para re-buscarlas. */
-    @GetMapping("/broken")
-    public List<Map<String, Object>> broken(@RequestParam Long supplierId) {
-        Map<Long, String> withImg = new LinkedHashMap<>();
-        Map<Long, Product> byId = new LinkedHashMap<>();
-        for (Product p : productRepo.findAllById(offerRepo.findProductIdsBySupplier(supplierId))) {
-            if (Boolean.TRUE.equals(p.getArchived())) continue;
-            if (p.getImageUrl() != null && !p.getImageUrl().isBlank()) {
-                withImg.put(p.getId(), p.getImageUrl());
-                byId.put(p.getId(), p);
-            }
-        }
-        Set<Long> brokenIds = apify.findBroken(withImg);
+    /**
+     * Productos CON foto, para que el NAVEGADOR del admin las valide (la detección de rotas
+     * vive en el frontend: es el único juez fiel de "se ve / no se ve").
+     * Sin supplierId = TODO el catálogo (antes solo se escaneaba por proveedor y los
+     * productos sin oferta de ese proveedor jamás se revisaban).
+     */
+    @GetMapping("/photos")
+    public List<Map<String, Object>> photos(@RequestParam(required = false) Long supplierId) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (Long id : brokenIds) {
-            Product p = byId.get(id);
-            if (p != null) out.add(row(p));
+        for (Product p : productsFor(supplierId)) {
+            if (Boolean.TRUE.equals(p.getArchived())) continue;
+            if (p.getImageUrl() == null || p.getImageUrl().isBlank()) continue;
+            out.add(row(p));
         }
         return out;
+    }
+
+    private List<Product> productsFor(Long supplierId) {
+        if (supplierId == null) return productRepo.findAll();
+        return productRepo.findAllById(offerRepo.findProductIdsBySupplier(supplierId));
     }
 
     private Map<String, Object> row(Product p) {
