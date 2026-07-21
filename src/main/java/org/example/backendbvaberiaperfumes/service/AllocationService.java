@@ -227,6 +227,7 @@ public class AllocationService {
             line.productId = l.product.getId();
             line.brand = l.product.getBrand();
             line.name = l.product.getName();
+            line.gtin = l.product.getGtin();
             line.ml = l.product.getMl();
             line.quantity = l.qty;
             line.unitCostUsd = round(unitCost);

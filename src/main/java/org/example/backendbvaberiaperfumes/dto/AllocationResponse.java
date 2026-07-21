@@ -61,6 +61,7 @@ public class AllocationResponse {
         public Long productId;
         public String brand;
         public String name;
+        public String gtin;          // UPC/GTIN canónico del producto (solo informativo)
         public Integer ml;
         public int quantity;
         public double unitCostUsd;
