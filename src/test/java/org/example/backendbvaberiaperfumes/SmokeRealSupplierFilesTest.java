@@ -68,9 +68,10 @@ class SmokeRealSupplierFilesTest {
                 + " l2Auto=" + f1.getL2AutoMatched() + " revision=" + f1.getReviewQueued()
                 + " sospechosas=" + f1.getSuspiciousRows());
 
-        // 979/617: el parser salta filas sin precio (una de Zimaxx y tres de FS).
-        assertEquals(979, z1.getRowsRead(), "Zimaxx US Wholesale trae 979 filas con precio");
-        assertEquals(617, f1.getRowsRead(), "FragranceSense trae 617 filas con precio");
+        // Conteo con piso (no valor exacto): las listas del proveedor crecen/cambian con el tiempo,
+        // pero el parser debe seguir leyendo la lista completa (regresión = leería 0 o muy pocas).
+        assertTrue(z1.getRowsRead() >= 900, "Zimaxx debe leer la lista completa (>=900 filas con precio), leyó " + z1.getRowsRead());
+        assertTrue(f1.getRowsRead() >= 600, "FragranceSense debe leer la lista completa (>=600 filas con precio), leyó " + f1.getRowsRead());
 
         // FS: 12 typos de checksum + vacios -> filas sin UPC valido; ninguna crea identidad por codigo.
         assertTrue(f1.getNoUpcRows() >= 12, "los 12 typos de checksum de FS quedan sin UPC");
