@@ -32,6 +32,7 @@ class AllocationServiceTest {
     @Autowired ConsolidadoRepository consolidadoRepo;
     @Autowired OrderRepository orderRepo;
     @Autowired PurchasePlanRepository planRepo;
+    @Autowired MissingResolutionRepository missingResolutionRepo;
 
     // ================= helpers =================
 
@@ -263,6 +264,73 @@ class AllocationServiceTest {
         PurchasePlan plan = allocationService.confirmPlan(con.getId(), planId, true);
         assertEquals("CONFIRMED", plan.getStatus());
         assertNotNull(plan.getConfirmedAt());
+    }
+
+    @Test
+    void trazabilidadDeLaDecisionSeExponeSinCambiarLaAsignacion() {
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        Supplier magnet = supplierRepo.findByName("Magnet").orElseThrow();
+        setMinOrder(magnet, 0.0);   // neutraliza mínimos que otros tests dejaron en la H2 compartida
+        setMinOrder(zimaxx, 40.0);
+
+        Product a = product("TR-A", "Lattafa", "Khamrah");   // Magnet 10 / Zimaxx 12 (movido a ZX)
+        Product b = product("TR-B", "Lattafa", "Yara");      // solo Zimaxx 30 (único)
+        Product c = product("TR-C", "Afnan", "9pm");         // solo Magnet 8 (más barato, único)
+        offer(a, magnet, "TR-A-MAG", 10.0);
+        offer(a, zimaxx, "TR-A-ZX", 12.0);
+        offer(b, zimaxx, "TR-B-ZX", 30.0);
+        offer(c, magnet, "TR-C-MAG", 8.0);
+
+        Consolidado con = consolidadoWithOrder((o, cc) -> {
+            o.getItems().add(item(o, a, 1, 55.0));
+            o.getItems().add(item(o, b, 1, 113.0));
+            o.getItems().add(item(o, c, 1, 45.0));
+        });
+
+        AllocationResponse r = allocationService.computeAllocation(con.getId());
+
+        // La asignacion no cambia: mismo escenario que forzarGana... -> Zimaxx = A(12)+B(30) = 42.
+        assertEquals(2.0, r.extraCostUsd, 0.001);
+        AllocationResponse.SupplierAllocation zg = group(r, "Zimaxx");
+
+        // Khamrah: movido a Zimaxx, 2 alternativas (una elegida, una mas barata), motivo "Movido".
+        AllocationResponse.AllocationLine kh = zg.lines.stream()
+                .filter(l -> l.name.equals("Khamrah")).findFirst().orElseThrow();
+        assertEquals(2, kh.alternatives.size(), "Khamrah tiene precio en 2 proveedores");
+        assertEquals(zimaxx.getId(), kh.chosenSupplierId);
+        assertEquals(magnet.getId(), kh.cheapestSupplierId);
+        assertTrue(kh.alternatives.stream().anyMatch(ap -> ap.chosen && ap.supplierId.equals(zimaxx.getId())));
+        assertTrue(kh.alternatives.stream().anyMatch(ap -> ap.cheapest && ap.supplierId.equals(magnet.getId())));
+        assertTrue(kh.reason.startsWith("Movido"), kh.reason);
+        // alternativas ordenadas por costo ascendente (el mas barato primero)
+        assertTrue(kh.alternatives.get(0).unitCostUsd <= kh.alternatives.get(1).unitCostUsd);
+
+        // Yara: un solo proveedor -> motivo "Único proveedor con stock".
+        AllocationResponse.AllocationLine ya = zg.lines.stream()
+                .filter(l -> l.name.equals("Yara")).findFirst().orElseThrow();
+        assertEquals(1, ya.alternatives.size());
+        assertEquals("Único proveedor con stock", ya.reason);
+    }
+
+    @Test
+    void resolucionDeFaltanteHaceUpsertPorConsolidadoYProducto() {
+        Long consolidadoId = 777L, productId = 999L;
+        MissingResolution m = new MissingResolution();
+        m.setConsolidadoId(consolidadoId);
+        m.setProductId(productId);
+        m.setStatus(MissingResolution.CRIST_BOUGHT);
+        missingResolutionRepo.save(m);
+
+        MissingResolution found = missingResolutionRepo
+                .findByConsolidadoIdAndProductId(consolidadoId, productId).orElseThrow();
+        assertEquals(MissingResolution.CRIST_BOUGHT, found.getStatus());
+
+        // Actualizar (upsert): mismo par -> misma fila, nuevo estado.
+        found.setStatus(MissingResolution.UNAVAILABLE);
+        missingResolutionRepo.save(found);
+        assertEquals(1, missingResolutionRepo.findByConsolidadoId(consolidadoId).size());
+        assertEquals(MissingResolution.UNAVAILABLE,
+                missingResolutionRepo.findByConsolidadoIdAndProductId(consolidadoId, productId).orElseThrow().getStatus());
     }
 
     @Test

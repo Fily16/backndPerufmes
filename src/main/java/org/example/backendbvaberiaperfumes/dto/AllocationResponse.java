@@ -67,6 +67,21 @@ public class AllocationResponse {
         public double subtotalUsd;
         public boolean movedToReachMin;   // se movio aqui solo para llegar al minimo de Zimaxx
         public double penaltyUsd;         // sobrecosto unitario vs el proveedor mas barato (0 si era el mas barato)
+
+        // --- Trazabilidad de la decision (datos que el optimizador YA calculo) ---
+        public Long chosenSupplierId;
+        public Long cheapestSupplierId;
+        public String reason;                            // motivo legible de la eleccion
+        public List<AltPrice> alternatives = new ArrayList<>();  // precio en TODOS los proveedores con stock
+    }
+
+    /** Precio del mismo perfume en un proveedor (para explicar la decision). */
+    public static class AltPrice {
+        public Long supplierId;
+        public String supplierName;
+        public double unitCostUsd;
+        public boolean chosen;    // es el proveedor elegido por el algoritmo
+        public boolean cheapest;  // es el mas barato
     }
 
     public static class FillSuggestion {

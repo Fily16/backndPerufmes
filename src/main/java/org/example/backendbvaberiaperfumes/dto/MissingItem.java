@@ -10,7 +10,12 @@ public class MissingItem {
     private Long productId;
     private String brand;
     private String name;
+    private Integer ml;
     private Double priceUsd;
+    /** Precio registrado en el sistema (mayorista PEN) — "el sistema ya tiene calculado su precio". */
+    private Double registeredPricePen;
+    /** CRIST_PENDING (Caso A por defecto) | CRIST_BOUGHT | UNAVAILABLE (Caso B). */
+    private String resolutionStatus;
     private List<OrderRef> orders;
 
     public Long getProductId() { return productId; }
@@ -22,8 +27,17 @@ public class MissingItem {
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
+    public Integer getMl() { return ml; }
+    public void setMl(Integer ml) { this.ml = ml; }
+
     public Double getPriceUsd() { return priceUsd; }
     public void setPriceUsd(Double priceUsd) { this.priceUsd = priceUsd; }
+
+    public Double getRegisteredPricePen() { return registeredPricePen; }
+    public void setRegisteredPricePen(Double registeredPricePen) { this.registeredPricePen = registeredPricePen; }
+
+    public String getResolutionStatus() { return resolutionStatus; }
+    public void setResolutionStatus(String resolutionStatus) { this.resolutionStatus = resolutionStatus; }
 
     public List<OrderRef> getOrders() { return orders; }
     public void setOrders(List<OrderRef> orders) { this.orders = orders; }

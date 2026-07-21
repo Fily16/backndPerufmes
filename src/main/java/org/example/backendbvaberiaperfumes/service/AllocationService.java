@@ -233,6 +233,31 @@ public class AllocationService {
             line.subtotalUsd = round(unitCost * l.qty);
             line.movedToReachMin = !e.getValue().equals(l.baselineSupplierId);
             line.penaltyUsd = line.movedToReachMin ? round(unitCost - l.baselineUnitCost) : 0;
+
+            // Trazabilidad: precio en TODOS los proveedores con stock (el optimizador ya lo tiene en l.offers).
+            line.chosenSupplierId = e.getValue();
+            line.cheapestSupplierId = l.baselineSupplierId;
+            l.offers.entrySet().stream()
+                    .sorted(Comparator.comparingDouble(Map.Entry::getValue))
+                    .forEach(of -> {
+                        AllocationResponse.AltPrice ap = new AllocationResponse.AltPrice();
+                        ap.supplierId = of.getKey();
+                        Supplier sup = r.suppliersById.get(of.getKey());
+                        ap.supplierName = sup != null ? sup.getName() : ("#" + of.getKey());
+                        ap.unitCostUsd = round(of.getValue());
+                        ap.chosen = of.getKey().equals(e.getValue());
+                        ap.cheapest = of.getKey().equals(l.baselineSupplierId);
+                        line.alternatives.add(ap);
+                    });
+            if (l.offers.size() == 1) {
+                line.reason = "Único proveedor con stock";
+            } else if (line.movedToReachMin) {
+                Supplier sup = r.suppliersById.get(e.getValue());
+                line.reason = "Movido a " + (sup != null ? sup.getName() : "proveedor")
+                        + " para cumplir su mínimo (+US$ " + fmt(line.penaltyUsd) + "/u vs el más barato)";
+            } else {
+                line.reason = "Menor costo entre " + l.offers.size() + " proveedores";
+            }
             g.lines.add(line);
             g.subtotalUsd += unitCost * l.qty;
         }

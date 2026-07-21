@@ -4,6 +4,7 @@ import org.example.backendbvaberiaperfumes.dto.*;
 import org.example.backendbvaberiaperfumes.model.Admin;
 import org.example.backendbvaberiaperfumes.model.AppConfig;
 import org.example.backendbvaberiaperfumes.model.Consolidado;
+import org.example.backendbvaberiaperfumes.model.MissingResolution;
 import org.example.backendbvaberiaperfumes.model.Order;
 import org.example.backendbvaberiaperfumes.model.OrderItem;
 import org.example.backendbvaberiaperfumes.model.Product;
@@ -55,6 +56,9 @@ public class AdminController {
     @org.springframework.beans.factory.annotation.Autowired
     private SupplierOfferRepository offerRepo;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private MissingResolutionRepository missingResolutionRepo;
+
     // --- ERP: faltantes (perfumes pedidos sin proveedor) con el cliente que los pidió ---
     @GetMapping("/consolidados/{id}/missing")
     public List<MissingItem> getMissing(@PathVariable Long id) {
@@ -74,7 +78,9 @@ public class AdminController {
                     x.setProductId(p.getId());
                     x.setBrand(p.getBrand());
                     x.setName(p.getName());
+                    x.setMl(p.getMl());
                     x.setPriceUsd(p.getPriceUsd());
+                    x.setRegisteredPricePen(p.getWholesalePricePen());
                     x.setOrders(new java.util.ArrayList<>());
                     return x;
                 });
@@ -93,7 +99,42 @@ public class AdminController {
                 result.add(mi);
             }
         }
+        // Adjunta el estado de resolucion (Caso A CristFragance por defecto / Caso B imposible).
+        Map<Long, String> statusByProduct = new java.util.HashMap<>();
+        for (MissingResolution mr : missingResolutionRepo.findByConsolidadoId(id)) {
+            statusByProduct.put(mr.getProductId(), mr.getStatus());
+        }
+        for (MissingItem mi : result) {
+            mi.setResolutionStatus(statusByProduct.getOrDefault(mi.getProductId(), MissingResolution.CRIST_PENDING));
+        }
         return result;
+    }
+
+    /**
+     * Marca la resolucion de un perfume faltante: CRIST_PENDING | CRIST_BOUGHT | UNAVAILABLE.
+     * Metadato de seguimiento (persiste el "comprado en CristFragance" y separa los imposibles);
+     * NO afecta la asignacion de compra.
+     */
+    @PutMapping("/consolidados/{id}/missing/{productId}")
+    public ResponseEntity<?> setMissingResolution(@PathVariable Long id, @PathVariable Long productId,
+                                                  @RequestBody Map<String, String> body) {
+        String status = body != null ? body.get("status") : null;
+        if (status == null || !java.util.Set.of(
+                MissingResolution.CRIST_PENDING, MissingResolution.CRIST_BOUGHT, MissingResolution.UNAVAILABLE)
+                .contains(status)) {
+            return ResponseEntity.badRequest().body(Map.of("message", "status inválido"));
+        }
+        MissingResolution mr = missingResolutionRepo.findByConsolidadoIdAndProductId(id, productId)
+                .orElseGet(() -> {
+                    MissingResolution m = new MissingResolution();
+                    m.setConsolidadoId(id);
+                    m.setProductId(productId);
+                    return m;
+                });
+        mr.setStatus(status);
+        mr.setUpdatedAt(java.time.Instant.now());
+        missingResolutionRepo.save(mr);
+        return ResponseEntity.ok(Map.of("productId", productId, "status", status));
     }
 
     // --- ERP: vendedores (para el filtro de la tabla de pedidos) ---
