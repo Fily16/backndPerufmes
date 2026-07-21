@@ -269,6 +269,43 @@ class ConsolidadoLifecycleTest {
                 Instant.now().plus(1, ChronoUnit.DAYS).toEpochMilli(), null));
     }
 
+    // ================= 5b. Reapertura temporal =================
+
+    @Test
+    void reabrirTemporalmenteVuelveAHabilitarYElSchedulerLoCierraSolo() {
+        // Cerrado con plazo vencido: el encargo se rechaza.
+        Consolidado c = consolidado("CERRADO", Instant.now().minus(2, ChronoUnit.DAYS), Instant.now().minus(1, ChronoUnit.DAYS));
+        assertThrows(IllegalArgumentException.class, () -> service.createOrder(pedido("CONSOLIDADO", 1)));
+
+        // Reabrir 60 min -> ABIERTO, plazo futuro, marca extendido, acepta encargos.
+        Consolidado re = service.reopenTemporarily(c.getId(), 60);
+        assertEquals("ABIERTO", re.getStatus());
+        assertTrue(re.getEndsAt().isAfter(Instant.now()));
+        assertTrue(Boolean.TRUE.equals(re.getExtended()));
+        Order o = service.createOrder(pedido("CONSOLIDADO", 1));
+        assertEquals("CONSOLIDADO", o.getChannel());
+        assertTrue(service.getCurrentPublic().open);
+
+        // Al vencer el rato, el scheduler lo vuelve a cerrar solo (sin re-cerrar a mano).
+        re.setEndsAt(Instant.now().minusSeconds(5));
+        consolidadoRepo.save(re);
+        scheduler.tick();
+        assertEquals("CERRADO", consolidadoRepo.findById(c.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void noSePuedeReabrirSiYaHayOtroAbiertoNiUnoNoCerrado() {
+        // Con otro ABIERTO presente -> no se puede (dos abiertos confundirian al cliente).
+        Consolidado cerrado = consolidado("CERRADO", Instant.now().minus(2, ChronoUnit.DAYS), Instant.now().minus(1, ChronoUnit.DAYS));
+        consolidado("ABIERTO", Instant.now().minusSeconds(60), Instant.now().plus(1, ChronoUnit.DAYS));
+        assertThrows(IllegalStateException.class, () -> service.reopenTemporarily(cerrado.getId(), 60));
+
+        // Un ENTREGADO no se reabre (ya movio su mercancia).
+        consolidadoRepo.deleteAll();
+        Consolidado entregado = consolidado("ENTREGADO", Instant.now().minus(5, ChronoUnit.DAYS), Instant.now().minus(4, ChronoUnit.DAYS));
+        assertThrows(IllegalStateException.class, () -> service.reopenTemporarily(entregado.getId(), 60));
+    }
+
     // ================= 6. Galeria de imagenes =================
 
     @Test

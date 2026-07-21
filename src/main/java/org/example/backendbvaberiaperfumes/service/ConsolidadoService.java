@@ -179,6 +179,31 @@ public class ConsolidadoService {
         return consolidadoRepo.save(c);
     }
 
+    /**
+     * Reabre TEMPORALMENTE un consolidado CERRADO: vuelve a ABIERTO con un plazo corto
+     * (endsAt = ahora + minutos). El scheduler lo vuelve a cerrar solo al vencer el rato,
+     * así que no hay que re-cerrarlo a mano. Reutiliza el candado de pedidos, el countdown
+     * y el aviso de "¡Plazo extendido! Aprovecha".
+     * Falla si ya hay otro ABIERTO/PROGRAMADO: no pueden coexistir dos abiertos (el cliente
+     * no sabría a cuál está pidiendo).
+     */
+    @Transactional
+    public Consolidado reopenTemporarily(Long id, int minutes) {
+        Consolidado c = getById(id);
+        if (!"CERRADO".equals(c.getStatus())) {
+            throw new IllegalStateException("Solo se puede reabrir un consolidado cerrado.");
+        }
+        if (consolidadoRepo.countByStatusIn(List.of("ABIERTO", "PROGRAMADO")) > 0) {
+            throw new IllegalStateException("Ya hay un consolidado abierto o programado; ciérralo antes de reabrir este.");
+        }
+        int mins = Math.max(1, Math.min(1440, minutes)); // 1 min .. 24 h
+        c.setStatus("ABIERTO");
+        c.setEndsAt(java.time.Instant.now().plusSeconds(mins * 60L));
+        c.setExtended(true);   // el aviso público muestra "¡Plazo extendido! Aprovecha"
+        c.setCloseDate(null);  // vuelve a estar abierto; al re-cerrar, closeConsolidado lo sella de nuevo
+        return consolidadoRepo.save(c);
+    }
+
     public Consolidado getActiveOrNull() {
         return consolidadoRepo.findFirstByStatusOrderByCreatedAtDesc("ABIERTO").orElse(null);
     }

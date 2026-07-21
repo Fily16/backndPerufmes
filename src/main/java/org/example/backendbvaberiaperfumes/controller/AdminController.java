@@ -505,6 +505,23 @@ public class AdminController {
         }
     }
 
+    /** Reabre TEMPORALMENTE un consolidado cerrado por N minutos (el scheduler lo cierra solo). */
+    @PostMapping("/consolidados/{id}/reopen")
+    public ResponseEntity<?> reopenConsolidado(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Long mins = asLong(body.get("minutes"));
+        if (mins == null || mins <= 0) {
+            return ResponseEntity.badRequest().body(Map.of("message", "minutes inválido"));
+        }
+        try {
+            Consolidado c = consolidadoService.reopenTemporarily(id, mins.intValue());
+            return ResponseEntity.ok(c);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     private static String asString(Object v) { return v != null ? String.valueOf(v) : null; }
     private static Long asLong(Object v) { return v instanceof Number n ? n.longValue() : null; }
 
