@@ -9,6 +9,7 @@ import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.service.DuplicateScanService;
 import org.example.backendbvaberiaperfumes.service.ProductMergeService;
+import org.example.backendbvaberiaperfumes.util.GtinCanonicalizer;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -155,6 +156,61 @@ public class MatchReviewController {
     @PostMapping("/products/{canonicalId}/merge/{duplicateId}")
     public ResponseEntity<?> merge(@PathVariable Long canonicalId, @PathVariable Long duplicateId) {
         return ResponseEntity.ok(mergeService.merge(canonicalId, duplicateId));
+    }
+
+    /**
+     * Fija (o limpia) el UPC/GTIN de un producto a mano, con GUARD de conflicto: si el codigo
+     * ya pertenece a OTRO producto vivo, no lo pisa a ciegas -> responde 409 con el producto en
+     * conflicto para que el admin elija fusionar (POST .../merge/...) o descartar. Cierra el caso
+     * "un admin escribe un UPC que ya es de otro producto" sin crear duplicados silenciosos.
+     */
+    @PutMapping("/products/{id}/gtin")
+    public ResponseEntity<?> setGtin(@PathVariable Long id, @RequestBody Map<String, String> body) {
+        Product p = productRepo.findById(id).orElse(null);
+        if (p == null) return ResponseEntity.notFound().build();
+
+        String raw = body != null ? body.get("gtin") : null;
+        if (raw == null || raw.isBlank()) {
+            // Limpiar el UPC es valido (deja el producto sin codigo).
+            p.setGtin(null);
+            p.setGtinConflict(false);
+            productRepo.save(p);
+            Map<String, Object> ok = new LinkedHashMap<>();
+            ok.put("id", id);
+            ok.put("gtin", null);
+            return ResponseEntity.ok(ok);
+        }
+
+        GtinCanonicalizer.GtinResult gr = GtinCanonicalizer.canonicalize(raw);
+        if (gr.canonical14 == null) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "message", "UPC invalido (" + gr.status.name() + "). Revisa el codigo de barras.",
+                    "status", gr.status.name()));
+        }
+        String canon = gr.canonical14;
+
+        for (Product other : productRepo.findByGtinAndArchivedFalse(canon)) {
+            if (!other.getId().equals(id)) {
+                Map<String, Object> conflict = new LinkedHashMap<>();
+                conflict.put("message", "El UPC " + canon + " ya pertenece a otro producto ("
+                        + other.getBrand() + " " + other.getName() + "). Fusiona ambos o revisa antes de asignarlo.");
+                conflict.put("conflict", true);
+                conflict.put("thisProductId", id);
+                conflict.put("conflictProductId", other.getId());
+                conflict.put("conflictBrand", other.getBrand());
+                conflict.put("conflictName", other.getName());
+                conflict.put("gtin", canon);
+                return ResponseEntity.status(409).body(conflict);
+            }
+        }
+
+        p.setGtin(canon);
+        p.setGtinConflict(false);
+        productRepo.save(p);
+        Map<String, Object> ok = new LinkedHashMap<>();
+        ok.put("id", id);
+        ok.put("gtin", canon);
+        return ResponseEntity.ok(ok);
     }
 
     /** Escanea el catalogo completo y puebla la cola de revision. */

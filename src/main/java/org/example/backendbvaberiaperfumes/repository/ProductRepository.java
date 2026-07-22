@@ -9,6 +9,8 @@ import java.util.Optional;
 public interface ProductRepository extends JpaRepository<Product, Long> {
     Optional<Product> findBySku(String sku);
     Optional<Product> findByGtin(String gtin);
+    /** Productos VIVOS con este GTIN (para el guard de conflicto: puede haber >1 si ya hay duplicados). */
+    List<Product> findByGtinAndArchivedFalse(String gtin);
     List<Product> findByAvailableTrue();
     List<Product> findByCategory(String category);
     List<Product> findByBrand(String brand);

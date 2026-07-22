@@ -282,7 +282,7 @@ public class ExcelImportService {
         Set<Long> touchedProducts = new HashSet<>();
         Set<String> seenCandidatePairs = new HashSet<>();
         int created = 0, offersCreated = 0, offersUpdated = 0, trueDups = 0, noUpc = 0;
-        int l2Auto = 0, reviewQueued = 0, suspicious = 0;
+        int l2Auto = 0, reviewQueued = 0, suspicious = 0, gtinAdopted = 0;
 
         for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
             ParsedRow row = rows.get(rowIdx);
@@ -304,6 +304,7 @@ public class ExcelImportService {
             SupplierOffer offer = offersByKey.get(ok.key);
             Product product;
             MatchingEngine.MatchOutcome outcome = null; // solo filas nuevas sin GTIN confiable
+            Product trustedTwinConflict = null;         // gemelo por nombre con GTIN distinto -> revision
             boolean matchedByGtin = false;
             if (offer != null) {
                 product = offer.getProduct();
@@ -315,9 +316,39 @@ public class ExcelImportService {
                         product = existing;
                         matchedByGtin = true;
                     } else {
-                        product = matching.createProduct(row, row.gtin, false, supplier.getName());
-                        created++;
-                        session.addProduct(product);
+                        // El GTIN es nuevo para el catalogo. Antes de crear un producto, buscar
+                        // un GEMELO por NOMBRE: es el caso "antes sin UPC, ahora con UPC". El gemelo
+                        // viejo se creo sin GTIN, asi que NO esta en el indice de GTIN (byGtin no lo
+                        // ve), solo en el de nombre. Si existe y NO tiene un GTIN que lo contradiga,
+                        // se le ADOPTA el codigo entrante (unifica sin duplicar). Si el gemelo ya
+                        // tiene OTRO GTIN, es un posible duplicado real -> cola de revision (nunca
+                        // se fusiona solo: el admin decide).
+                        MatchingEngine.MatchOutcome nameOutcome = session.resolve(row);
+                        Product twin = adoptableTwin(nameOutcome);
+                        if (twin != null) {
+                            twin.setGtin(row.gtin);
+                            twin.setGtinConflict(false);
+                            twin.setMatchPending(false);
+                            productRepo.save(twin);
+                            session.addProduct(twin);   // re-indexar: byGtin ya lo encuentra
+                            product = twin;
+                            gtinAdopted++;
+                        } else {
+                            product = matching.createProduct(row, row.gtin, false, supplier.getName());
+                            created++;
+                            session.addProduct(product);
+                            if (nameOutcome.autoMatch != null) {
+                                // Mismo nombre exacto pero con OTRO GTIN: posible duplicado -> revision.
+                                trustedTwinConflict = nameOutcome.autoMatch;
+                                product.setMatchPending(true);
+                                productRepo.save(product);
+                            } else if (!nameOutcome.reviewCandidates.isEmpty()) {
+                                // Nombre parecido (no identico): que el admin confirme.
+                                outcome = nameOutcome;
+                                product.setMatchPending(true);
+                                productRepo.save(product);
+                            }
+                        }
                     }
                 } else if (ok.conflict) {
                     product = matching.createProduct(row, null, true, supplier.getName());
@@ -370,6 +401,17 @@ public class ExcelImportService {
                 if (any) reviewQueued++;
             }
 
+            // Rama de GTIN confiable: mismo nombre exacto que otro producto con GTIN distinto
+            // (posible duplicado del mismo perfume) -> a la cola de revision.
+            if (trustedTwinConflict != null) {
+                if (queueCandidate("L2_IMPORT", product.getId(), trustedTwinConflict.getId(),
+                        offer.getId(), 1.0,
+                        List.of("mismo nombre que un producto con GTIN distinto: posible duplicado del mismo perfume"),
+                        seenCandidatePairs)) {
+                    reviewQueued++;
+                }
+            }
+
             // Mismo GTIN pero atributos contradictorios entre proveedores (ej. 200ml vs 100ml).
             if (matchedByGtin) {
                 queueAttrConflictIfNeeded(row, product, offer);
@@ -412,6 +454,11 @@ public class ExcelImportService {
         summary.setL2AutoMatched(l2Auto);
         summary.setReviewQueued(reviewQueued);
         summary.setSuspiciousRows(suspicious);
+        summary.setGtinAdopted(gtinAdopted);
+        if (gtinAdopted > 0) {
+            summary.addNote("Productos que ya existian SIN UPC y adoptaron el codigo entrante "
+                    + "(unificados sin duplicar): " + gtinAdopted);
+        }
         if (suspicious > 0) {
             summary.addNote("Filas con costo fuera de rango guardadas FUERA de stock (aprobarlas desde el preview): " + suspicious);
         }
@@ -447,6 +494,22 @@ public class ExcelImportService {
         candidateRepo.save(mc);
         return true;
     }
+
+    /**
+     * Gemelo por NOMBRE al que es SEGURO adoptarle un GTIN entrante: identidad de nombre
+     * (AUTO_MATCH, o REVIEW con jaccard 1.0 -> mismos tokens exactos, sin flanker residual)
+     * y SIN GTIN que lo contradiga. El score 1.0 en REVIEW solo ocurre por datos incompletos
+     * (ml/concentracion/genero desconocidos), nunca por diferencia real: por eso es adoptable.
+     */
+    private Product adoptableTwin(MatchingEngine.MatchOutcome o) {
+        if (o.autoMatch != null && isBlank(o.autoMatch.getGtin())) return o.autoMatch;
+        for (MatchingEngine.ReviewCandidate rc : o.reviewCandidates) {
+            if (rc.product != null && rc.score >= 0.9999 && isBlank(rc.product.getGtin())) return rc.product;
+        }
+        return null;
+    }
+
+    private static boolean isBlank(String s) { return s == null || s.isBlank(); }
 
     /** Mismo GTIN, atributos incompatibles (tamano). El GTIN manda, pero se avisa al admin. */
     private void queueAttrConflictIfNeeded(ParsedRow row, Product product, SupplierOffer offer) {

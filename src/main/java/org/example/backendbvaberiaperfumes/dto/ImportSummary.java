@@ -17,6 +17,7 @@ public class ImportSummary {
     private int l2AutoMatched;      // filas sin UPC enganchadas a producto existente por nombre
     private int reviewQueued;       // candidatos enviados a la cola de revision del admin
     private int suspiciousRows;     // filas con costo fuera de rango, guardadas fuera de stock
+    private int gtinAdopted;        // productos sin UPC que adoptaron el codigo entrante (unificados)
     private final List<String> notes = new ArrayList<>();
 
     public void addNote(String n) { notes.add(n); }
@@ -45,5 +46,7 @@ public class ImportSummary {
     public void setReviewQueued(int v) { this.reviewQueued = v; }
     public int getSuspiciousRows() { return suspiciousRows; }
     public void setSuspiciousRows(int v) { this.suspiciousRows = v; }
+    public int getGtinAdopted() { return gtinAdopted; }
+    public void setGtinAdopted(int v) { this.gtinAdopted = v; }
     public List<String> getNotes() { return notes; }
 }
