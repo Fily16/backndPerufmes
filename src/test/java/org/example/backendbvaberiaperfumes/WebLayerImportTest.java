@@ -88,11 +88,12 @@ class WebLayerImportTest {
                 .andExpect(jsonPath("$.consolidadoId").value(consId));
 
         // 6. cutover archive-legacy (admin) -> archiva los productos del seed que quedan SIN ofertas.
-        // 69 y no 86: 17 productos del seed que no tenian UPC se UNIFICARON por nombre con filas de
-        // Zimaxx que traen UPC (adopcion de codigo en el import) -> ahora tienen oferta y no se archivan.
+        // 63 y no 86: productos del seed sin UPC que se UNIFICARON por nombre con filas de Zimaxx
+        // (adopcion de codigo en el import). Bajo de 69 a 63 al dejar de tratar "unisex vs men/women"
+        // como productos distintos: es etiquetado inconsistente entre proveedores, no contradiccion.
         mvc.perform(post("/api/admin/catalog/archive-legacy")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.archived").value(69));
+                .andExpect(jsonPath("$.archived").value(63));
     }
 }

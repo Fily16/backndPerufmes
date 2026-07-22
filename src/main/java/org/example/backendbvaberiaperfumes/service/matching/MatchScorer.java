@@ -74,7 +74,17 @@ public final class MatchScorer {
 
         if (a.gender != null && b.gender != null) {
             if (!a.gender.equals(b.gender)) {
-                return new Result(Decision.NEW, 0, List.of("genero distinto: " + a.gender + " vs " + b.gender));
+                // Solo MEN vs WOMEN es contradiccion dura (Devotion Men != Devotion Women).
+                // unisex vs men/women NO lo es: los proveedores etiquetan el MISMO perfume de
+                // formas distintas (uno "Unisex", otro "Men"). Se degrada a REVIEW, no a NEW.
+                boolean opposite = ("men".equals(a.gender) && "women".equals(b.gender))
+                        || ("women".equals(a.gender) && "men".equals(b.gender));
+                if (opposite) {
+                    return new Result(Decision.NEW, 0,
+                            List.of("genero distinto: " + a.gender + " vs " + b.gender));
+                }
+                capReview = true;
+                reasons.add("genero ambiguo: " + a.gender + " vs " + b.gender + " (etiquetado inconsistente)");
             }
         } else {
             capReview = true;

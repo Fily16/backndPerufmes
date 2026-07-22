@@ -9,7 +9,11 @@ import org.example.backendbvaberiaperfumes.repository.MatchCandidateRepository;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
+import org.example.backendbvaberiaperfumes.model.MatchCandidate;
+import org.example.backendbvaberiaperfumes.service.DuplicateScanService;
 import org.example.backendbvaberiaperfumes.service.ExcelImportService;
+import org.example.backendbvaberiaperfumes.service.matching.FingerprintExtractor;
+import org.example.backendbvaberiaperfumes.service.matching.ProductFingerprint;
 import org.example.backendbvaberiaperfumes.util.GtinCanonicalizer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +46,7 @@ class ProductDedupImportTest {
     @Autowired ProductRepository productRepo;
     @Autowired MatchCandidateRepository candidateRepo;
     @Autowired MatchReviewController reviewController;
+    @Autowired DuplicateScanService scanService;
 
     // GTINs validos DISTINTOS por test (el H2 se comparte entre metodos: reusar un codigo
     // haria que byGtin de un test encontrara el producto de otro).
@@ -120,6 +125,38 @@ class ProductDedupImportTest {
         assertEquals(1, s2.getProductsCreated(), "se crea el producto (posible duplicado) marcado para revision");
         assertTrue(candidateRepo.countByStatus("PENDING") > pendingBefore,
                 "se encolo un candidato de revision para que el admin decida");
+    }
+
+    @Test
+    void escaneoDetectaOdysseyConTypoHommeVsHomeeAunConCodigosDistintos() {
+        // Replica EXACTA del caso real: DOS productos ya separados en el catalogo.
+        // p1: codigo ASIN de Amazon (invalido como barcode -> sin GTIN).
+        // p2: codigo FR valido -> con GTIN; nombre con typo HOMEE en vez de HOMME.
+        Product p1 = new Product();
+        p1.setSku("AM-ODYSSEY-ASIN"); p1.setBrand("Armaf"); p1.setName("Odyssey Homme White Edition");
+        p1.setMl(100); p1.setType("Men"); p1.setCategory("men");
+        p1.setWeightG(600); p1.setAvailable(true); p1.setArchived(false);
+        p1 = productRepo.save(p1);
+
+        Product p2 = new Product();
+        p2.setSku("AM-ODYSSEY-FR"); p2.setBrand("ARMAF"); p2.setName("ODYSSEY HOMEE WHITE EDITION");
+        p2.setMl(100); p2.setCategory("unisex");
+        p2.setWeightG(600); p2.setAvailable(true); p2.setArchived(false);
+        p2.setGtin(GtinCanonicalizer.canonicalize("06294015109320").canonical14);
+        p2 = productRepo.save(p2);
+
+        // Diagnostico: las huellas deben quedar iguales (el typo tolerado).
+        ProductFingerprint f1 = FingerprintExtractor.fromProduct(p1);
+        ProductFingerprint f2 = FingerprintExtractor.fromProduct(p2);
+        assertEquals(f1.coreTokens, f2.coreTokens, "las huellas de nombre deben coincidir (typo tolerado)");
+
+        scanService.scan();
+
+        Long a = p1.getId(), b = p2.getId();
+        boolean found = candidateRepo.findByStatusOrderByCreatedAtDesc("PENDING").stream()
+                .anyMatch(mc -> (a.equals(mc.getSourceProductId()) && b.equals(mc.getTargetProductId()))
+                        || (b.equals(mc.getSourceProductId()) && a.equals(mc.getTargetProductId())));
+        assertTrue(found, "el escaneo DEBE proponer el par Odyssey (typo HOMME/HOMEE, codigos distintos)");
     }
 
     @Test
