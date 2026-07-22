@@ -52,6 +52,25 @@ class MatchScorerTest {
         assertEquals(Decision.AUTO_MATCH, score(fs, zx).decision);
     }
 
+    @Test
+    void typoEnDescriptorHommeVsHomeeSigueSiendoElMismo() {
+        // Caso real: "Odyssey Homme White Edition" vs "ODYSSEY HOMEE WHITE EDITION" (typo del proveedor).
+        // "homme" se elimina como descriptor; "homee" (typo) debe tolerarse a 1 letra y NO distinguir.
+        ParsedRow p1 = row("Armaf", "Odyssey Homme White Edition", 100, null);
+        ParsedRow p2 = row("ARMAF", "ODYSSEY HOMEE WHITE EDITION", 100, null);
+        MatchScorer.Result r = score(p1, p2);
+        assertNotEquals(Decision.NEW, r.decision, "typo en el descriptor no debe partirlos: " + r.reasons);
+        assertTrue(r.score >= 0.9999, "tras tolerar el typo, el nombre es identico: " + r.score + " " + r.reasons);
+    }
+
+    @Test
+    void generoConTypoHomeeSeDetectaComoMen() {
+        ProductFingerprint fp = FingerprintExtractor.fromRow(
+                row("Armaf", "ODYSSEY HOMEE WHITE EDITION", 100, null));
+        assertEquals("men", fp.gender, "HOMEE es un typo de HOMME -> genero men");
+        assertFalse(fp.coreTokens.contains("homee"), "el typo del descriptor no queda como token: " + fp.coreTokens);
+    }
+
     // ================= TRAMPA DE FLANKERS: JAMAS AUTO =================
 
     @Test

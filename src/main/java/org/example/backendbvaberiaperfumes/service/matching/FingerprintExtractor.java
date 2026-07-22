@@ -56,6 +56,19 @@ public final class FingerprintExtractor {
             "jpg", "gaultier"
     );
 
+    /**
+     * Descriptores "largos" (>=4 letras) contra los que toleramos UN typo del proveedor:
+     * "HOMEE" -> homme, "PARFUMM" -> parfum, "WOMENN" -> women. No se aplica a los cortos
+     * (men/man/oz/ml/de...) porque a 1 letra de ellos hay demasiadas palabras reales.
+     */
+    private static final Set<String> FUZZY_DESCRIPTORS = DESCRIPTOR_TOKENS.stream()
+            .filter(d -> d.length() >= 4)
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+
+    /** Palabras de genero (>=4) para deteccion tolerante a typos ("HOMEE" -> men). */
+    private static final Set<String> MEN_WORDS = Set.of("men", "man", "homme", "hombre", "caballero");
+    private static final Set<String> WOMEN_WORDS = Set.of("women", "woman", "femme", "dama", "mujer", "ladies");
+
     // =====================================================================
 
     public static ProductFingerprint fromRow(ParsedRow row) {
@@ -109,6 +122,12 @@ public final class FingerprintExtractor {
         if (WOMEN.matcher(t).find()) return "women";
         if (MEN.matcher(t).find()) return "men";
         if (UNISEX.matcher(t).find()) return "unisex";
+        // Fallback tolerante a typos del proveedor ("HOMEE" -> men): solo tokens de 4+ letras.
+        for (String tok : t.replaceAll("[^a-z0-9 ]", " ").split("\\s+")) {
+            if (tok.length() < 4) continue;
+            if (fuzzyMatchesAny(tok, WOMEN_WORDS)) return "women";
+            if (fuzzyMatchesAny(tok, MEN_WORDS)) return "men";
+        }
         return null;
     }
 
@@ -151,6 +170,8 @@ public final class FingerprintExtractor {
             t = t.replaceAll("^\\.+|\\.+$", ""); // puntos en los bordes fuera; "l.12.12" queda
             if (t.isEmpty()) continue;
             if (DESCRIPTOR_TOKENS.contains(t)) continue;
+            // Typo de un descriptor largo ("HOMEE" -> homme): tampoco distingue el perfume.
+            if (t.length() >= 4 && fuzzyMatchesAny(t, FUZZY_DESCRIPTORS)) continue;
             if (brandTokens.contains(t)) continue;
             if (t.matches("\\d+(\\.\\d+)?")) {
                 if (isSizeNumber(t, ml)) continue;
@@ -159,6 +180,40 @@ public final class FingerprintExtractor {
             out.add(t);
         }
         return out;
+    }
+
+    /** ¿El token esta a distancia de edicion <=1 de alguna palabra del conjunto? (typos del proveedor). */
+    private static boolean fuzzyMatchesAny(String t, Set<String> words) {
+        for (String w : words) {
+            if (w.length() >= 4 && withinEditDistance1(t, w)) return true;
+        }
+        return false;
+    }
+
+    /** Distancia de edicion (Levenshtein) <=1: una sustitucion, una insercion o una eliminacion. */
+    static boolean withinEditDistance1(String a, String b) {
+        int la = a.length(), lb = b.length();
+        if (Math.abs(la - lb) > 1) return false;
+        if (la > lb) { String ts = a; a = b; b = ts; int ti = la; la = lb; lb = ti; } // a = mas corto
+        if (la == lb) {
+            int diff = 0;
+            for (int i = 0; i < la; i++) {
+                if (a.charAt(i) != b.charAt(i) && ++diff > 1) return false;
+            }
+            return diff == 1; // 0 = identico (no es "typo"); lo tratamos como no-fuzzy
+        }
+        // lb = la + 1: una sola insercion en b.
+        int i = 0, j = 0;
+        boolean skipped = false;
+        while (i < la && j < lb) {
+            if (a.charAt(i) == b.charAt(j)) { i++; j++; }
+            else {
+                if (skipped) return false;
+                skipped = true;
+                j++;
+            }
+        }
+        return true;
     }
 
     /** Un numero es "de tamano" si coincide con los ml o con su equivalente en onzas. */

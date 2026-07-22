@@ -72,11 +72,15 @@ public class DuplicateScanService {
                 if (!seenPairs.add(lo + "-" + hi)) continue;
 
                 Product b = byId.get(otherId);
-                // Dos productos con GTIN valido DISTINTO son productos distintos por definicion.
-                if (a.getGtin() != null && b.getGtin() != null && !a.getGtin().equals(b.getGtin())) continue;
+                boolean differentGtin = a.getGtin() != null && b.getGtin() != null
+                        && !a.getGtin().equals(b.getGtin());
 
                 MatchScorer.Result r = MatchScorer.score(fa, fps.get(otherId), reviewJaccard);
                 if (r.decision == MatchScorer.Decision.NEW) continue;
+                // Codigos DISTINTOS: en este rubro el MISMO perfume llega con barcodes distintos
+                // segun el proveedor/region. Ya no se descarta de plano; se propone (nunca se fusiona
+                // solo) SOLO si el nombre es practicamente identico (score ~1.0), para no meter ruido.
+                if (differentGtin && r.score < 0.9999) continue;
 
                 // Direccion: el canonico (target) es el que tiene GTIN; a igualdad, el mas antiguo.
                 Product target = pickCanonical(a, b);
@@ -85,12 +89,17 @@ public class DuplicateScanService {
                         || candidateRepo.existsBySourceProductIdAndTargetProductId(target.getId(), source.getId())) {
                     continue; // ya propuesto (incluye rechazados: lista negra)
                 }
+                List<String> reasons = new ArrayList<>(r.reasons != null ? r.reasons : List.of());
+                if (differentGtin) {
+                    reasons.add(0, "codigos distintos (" + a.getGtin() + " vs " + b.getGtin()
+                            + "): mismo nombre exacto -> posible mismo perfume de dos fuentes");
+                }
                 MatchCandidate mc = new MatchCandidate();
                 mc.setKind("DEDUP_SCAN");
                 mc.setSourceProductId(source.getId());
                 mc.setTargetProductId(target.getId());
                 mc.setScore(r.score);
-                mc.setReasonsJson(toJson(r.reasons));
+                mc.setReasonsJson(toJson(reasons));
                 candidateRepo.save(mc);
                 created++;
             }
