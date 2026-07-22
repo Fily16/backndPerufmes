@@ -8,12 +8,12 @@ public class FillReport {
     public String supplierName;
     public String sheetName;
     public int totalRows;                          // filas de datos recorridas
-    public int found;                              // UPCs del pedido ubicados en el Excel
+    public int found;                              // líneas del pedido ubicadas en el Excel
     public int updated;                            // celdas de cantidad escritas
+    public int matchedByCode;                      // ubicadas por UPC / dígitos crudos
+    public int matchedByName;                      // ubicadas por SKU o nombre (fallback robusto)
     public int hiddenRows;                         // filas ocultadas (no pedidas)
-    public List<String> duplicateUpcs = new ArrayList<>();
-    public List<Missing> notFound = new ArrayList<>();     // pedido pero ausente del Excel
-    public List<Missing> noUpcLines = new ArrayList<>();   // pedido sin UPC (no ubicable por código)
+    public List<Missing> notFound = new ArrayList<>();     // pedido pero ausente del Excel (por ninguna clave)
     public long durationMs;
 
     public static class Missing {

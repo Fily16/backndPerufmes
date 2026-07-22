@@ -22,11 +22,15 @@ public interface SupplierExcelLayout {
         public final int headerRow;
         public final int upcCol;
         public final int qtyCol;
-        public FillLocation(Sheet sheet, int headerRow, int upcCol, int qtyCol) {
+        public final int nameCol;   // columna de descripción/título (-1 si no hay) — fallback por nombre
+        public final int skuCol;    // columna de SKU del proveedor (-1 si no hay) — fallback por SKU
+        public FillLocation(Sheet sheet, int headerRow, int upcCol, int qtyCol, int nameCol, int skuCol) {
             this.sheet = sheet;
             this.headerRow = headerRow;
             this.upcCol = upcCol;
             this.qtyCol = qtyCol;
+            this.nameCol = nameCol;
+            this.skuCol = skuCol;
         }
     }
 }

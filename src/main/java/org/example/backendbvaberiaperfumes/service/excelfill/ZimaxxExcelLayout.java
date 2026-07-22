@@ -29,9 +29,11 @@ public class ZimaxxExcelLayout implements SupplierExcelLayout {
                     && (h.containsKey("title product") || h.containsKey("title"))) {
                 int upc = ExcelCells.findCol(h, "upc");
                 int qty = ExcelCells.findCol(h, "qty", "quantity", "order", "cantidad");
+                int name = ExcelCells.findCol(h, "title product", "title");
+                int sku = ExcelCells.findCol(h, "sku");
                 if (upc < 0) throw new IllegalArgumentException("No se encontró la columna UPC en el Excel de Zimaxx.");
                 if (qty < 0) throw new IllegalArgumentException("No se encontró la columna Qty en el Excel de Zimaxx.");
-                return new FillLocation(sheet, r, upc, qty);
+                return new FillLocation(sheet, r, upc, qty, name, sku);
             }
         }
         throw new IllegalArgumentException("No se encontró el encabezado (UPC/Brand/Title) en el Excel de Zimaxx.");

@@ -3,6 +3,8 @@ package org.example.backendbvaberiaperfumes.controller;
 import org.example.backendbvaberiaperfumes.dto.AllocationResponse;
 import org.example.backendbvaberiaperfumes.dto.FillReport;
 import org.example.backendbvaberiaperfumes.model.Supplier;
+import org.example.backendbvaberiaperfumes.model.SupplierOffer;
+import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
 import org.example.backendbvaberiaperfumes.service.AllocationService;
 import org.example.backendbvaberiaperfumes.service.excelfill.SupplierExcelFiller;
@@ -25,12 +27,14 @@ public class ExcelFillController {
 
     private final AllocationService allocationService;
     private final SupplierRepository supplierRepo;
+    private final SupplierOfferRepository offerRepo;
     private final SupplierExcelFiller filler;
 
     public ExcelFillController(AllocationService allocationService, SupplierRepository supplierRepo,
-                               SupplierExcelFiller filler) {
+                               SupplierOfferRepository offerRepo, SupplierExcelFiller filler) {
         this.allocationService = allocationService;
         this.supplierRepo = supplierRepo;
+        this.offerRepo = offerRepo;
         this.filler = filler;
     }
 
@@ -51,31 +55,41 @@ public class ExcelFillController {
         AllocationResponse.SupplierAllocation sa = alloc.suppliers.stream()
                 .filter(s -> supplierId.equals(s.supplierId)).findFirst().orElse(null);
 
-        Map<String, Integer> qtyByUpc = new HashMap<>();
-        List<AllocationResponse.AllocationLine> withUpc = new ArrayList<>();
-        List<FillReport.Missing> noUpc = new ArrayList<>();
+        // Claves de ubicación EXACTAS por producto, tomadas de la importación del proveedor
+        // (mismo origen que el Excel): dígitos crudos del código, SKU y título tal como se importó.
+        Map<Long, SupplierOffer> offerByProduct = new HashMap<>();
+        for (SupplierOffer o : offerRepo.findBySupplier_Id(supplierId)) {
+            Long pid = o.getProduct() != null ? o.getProduct().getId() : null;
+            if (pid == null) continue;
+            // preferir la oferta en stock; si no, la primera que aparezca
+            SupplierOffer prev = offerByProduct.get(pid);
+            if (prev == null || (Boolean.TRUE.equals(o.getInStock()) && !Boolean.TRUE.equals(prev.getInStock()))) {
+                offerByProduct.put(pid, o);
+            }
+        }
+
+        List<SupplierExcelFiller.OrderLine> orderLines = new ArrayList<>();
         if (sa != null) {
             for (AllocationResponse.AllocationLine l : sa.lines) {
-                String canon = l.gtin != null ? GtinCanonicalizer.canonicalize(l.gtin).canonical14 : null;
-                if (canon != null) {
-                    qtyByUpc.merge(canon, l.quantity, Integer::sum);
-                    withUpc.add(l);
-                } else {
-                    noUpc.add(new FillReport.Missing(l.gtin, l.brand, l.name, l.quantity));
-                }
+                SupplierOffer o = l.productId != null ? offerByProduct.get(l.productId) : null;
+                SupplierExcelFiller.OrderLine ol = new SupplierExcelFiller.OrderLine();
+                ol.canonUpc = l.gtin != null ? GtinCanonicalizer.canonicalize(l.gtin).canonical14 : null;
+                ol.rawDigits = o != null ? o.getGtinRaw() : l.gtin;
+                ol.sku = o != null ? o.getSupplierSku() : null;
+                ol.title = (o != null && o.getRawTitle() != null && !o.getRawTitle().isBlank())
+                        ? o.getRawTitle()
+                        : (((l.brand != null ? l.brand : "") + " " + (l.name != null ? l.name : "")).trim());
+                ol.quantity = l.quantity;
+                ol.gtin = l.gtin;
+                ol.brand = l.brand;
+                ol.name = l.name;
+                orderLines.add(ol);
             }
         }
 
         try {
-            SupplierExcelFiller.FillResult res = filler.fill(file.getBytes(), supplier.getName(), qtyByUpc);
+            SupplierExcelFiller.FillResult res = filler.fill(file.getBytes(), supplier.getName(), orderLines);
             FillReport report = res.report;
-            report.noUpcLines = noUpc;
-            for (AllocationResponse.AllocationLine l : withUpc) {
-                String canon = GtinCanonicalizer.canonicalize(l.gtin).canonical14;
-                if (!res.matchedUpcs.contains(canon)) {
-                    report.notFound.add(new FillReport.Missing(l.gtin, l.brand, l.name, l.quantity));
-                }
-            }
 
             String orig = file.getOriginalFilename();
             String base = (orig != null ? orig.replaceAll("(?i)\\.xlsx?$", "") : "pedido").trim();

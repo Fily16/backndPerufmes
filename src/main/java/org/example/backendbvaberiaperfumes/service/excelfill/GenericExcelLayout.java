@@ -20,6 +20,10 @@ public class GenericExcelLayout implements SupplierExcelLayout {
             {"upc", "barcode", "ean", "gtin", "codigo", "código", "cod barras", "upc code", "bar code"};
     private static final String[] QTY_ALIASES =
             {"quantity", "qty", "order", "cantidad", "orden", "units", "order qty", "qty ordered", "pedido"};
+    private static final String[] NAME_ALIASES =
+            {"description", "sales description", "title", "title product", "product", "name", "nombre", "descripcion", "descripción", "item"};
+    private static final String[] SKU_ALIASES =
+            {"sku", "code", "ref", "referencia", "item code", "product code", "cod", "codigo interno"};
 
     @Override
     public boolean supports(String supplierName) {
@@ -36,7 +40,9 @@ public class GenericExcelLayout implements SupplierExcelLayout {
                 int upc = ExcelCells.findCol(h, UPC_ALIASES);
                 int qty = ExcelCells.findCol(h, QTY_ALIASES);
                 if (upc >= 0 && qty >= 0) {
-                    return new FillLocation(sheet, r, upc, qty);
+                    int name = ExcelCells.findCol(h, NAME_ALIASES);
+                    int sku = ExcelCells.findCol(h, SKU_ALIASES);
+                    return new FillLocation(sheet, r, upc, qty, name, sku);
                 }
             }
         }
