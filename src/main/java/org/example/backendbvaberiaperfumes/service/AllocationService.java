@@ -100,6 +100,7 @@ public class AllocationService {
                     c.brand = l.brand;
                     c.name = l.name;
                     c.gtin = l.gtin;
+                    c.ml = l.ml;
                     c.quantity = l.quantity;
                     c.currentSupplierName = g.name;
                     c.reason = "No disponible en " + plan.targetSupplierName;

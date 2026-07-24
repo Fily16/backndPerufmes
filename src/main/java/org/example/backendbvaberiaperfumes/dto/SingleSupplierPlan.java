@@ -43,6 +43,7 @@ public class SingleSupplierPlan {
         public String brand;
         public String name;
         public String gtin;
+        public Integer ml;
         public int quantity;
         /** Proveedor donde la asignación normal sí lo tenía (para trazabilidad). */
         public String currentSupplierName;
