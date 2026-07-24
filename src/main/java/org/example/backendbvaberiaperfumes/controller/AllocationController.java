@@ -1,6 +1,7 @@
 package org.example.backendbvaberiaperfumes.controller;
 
 import org.example.backendbvaberiaperfumes.dto.AllocationResponse;
+import org.example.backendbvaberiaperfumes.dto.SingleSupplierPlan;
 import org.example.backendbvaberiaperfumes.model.PurchasePlan;
 import org.example.backendbvaberiaperfumes.service.AllocationService;
 import org.springframework.http.HttpStatus;
@@ -24,6 +25,15 @@ public class AllocationController {
     @GetMapping("/consolidados/{id}/allocation")
     public ResponseEntity<AllocationResponse> getAllocation(@PathVariable Long id) {
         return ResponseEntity.ok(allocationService.computeAllocation(id));
+    }
+
+    /**
+     * "Comprar solo en un proveedor": consolida la asignacion en {supplierId} (reusa el mismo
+     * motor, no recalcula). Devuelve los que se compran ahi (incl. reasignados) y los que no.
+     */
+    @GetMapping("/consolidados/{id}/allocation/only/{supplierId}")
+    public ResponseEntity<SingleSupplierPlan> consolidate(@PathVariable Long id, @PathVariable Long supplierId) {
+        return ResponseEntity.ok(allocationService.consolidateToSupplier(id, supplierId));
     }
 
     /** Calcula y guarda un plan DRAFT (reemplaza drafts anteriores). Devuelve planId. */

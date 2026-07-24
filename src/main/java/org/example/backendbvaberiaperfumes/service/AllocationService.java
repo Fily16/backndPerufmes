@@ -1,6 +1,7 @@
 package org.example.backendbvaberiaperfumes.service;
 
 import org.example.backendbvaberiaperfumes.dto.AllocationResponse;
+import org.example.backendbvaberiaperfumes.dto.SingleSupplierPlan;
 import org.example.backendbvaberiaperfumes.model.*;
 import org.example.backendbvaberiaperfumes.repository.*;
 import org.example.backendbvaberiaperfumes.service.allocation.AllocationOptimizer;
@@ -53,6 +54,62 @@ public class AllocationService {
     /** Calculo advisory (endpoint historico): no persiste nada. */
     public AllocationResponse computeAllocation(Long consolidadoId) {
         return buildResponse(consolidadoId, runOptimizer(consolidadoId));
+    }
+
+    /**
+     * "Comprar solo en un proveedor": consolida la mayor cantidad posible en {@code targetSupplierId}
+     * reutilizando la asignacion normal (NO recalcula ni toca el motor). Cada linea ya trae en
+     * {@code alternatives} todos los proveedores con stock del producto: si el objetivo esta ahi, se
+     * compra ahi (movido si estaba en otro); si no, va a "no se consigue en el objetivo". Los
+     * productos sin oferta en ningun proveedor (CrisFragance) ni siquiera aparecen aqui: no se tocan.
+     * Parametrizado por proveedor -> escalable a cualquier otro sin logica nueva.
+     */
+    public SingleSupplierPlan consolidateToSupplier(Long consolidadoId, Long targetSupplierId) {
+        AllocationResponse resp = computeAllocation(consolidadoId);
+        SingleSupplierPlan plan = new SingleSupplierPlan();
+        plan.consolidadoId = consolidadoId;
+        plan.targetSupplierId = targetSupplierId;
+        plan.targetSupplierName = supplierRepo.findById(targetSupplierId)
+                .map(Supplier::getName).orElse("#" + targetSupplierId);
+
+        for (AllocationResponse.SupplierAllocation g : resp.suppliers) {
+            for (AllocationResponse.AllocationLine l : g.lines) {
+                AllocationResponse.AltPrice atTarget = l.alternatives.stream()
+                        .filter(a -> targetSupplierId.equals(a.supplierId))
+                        .findFirst().orElse(null);
+                if (atTarget != null) {
+                    SingleSupplierPlan.BuyLine bl = new SingleSupplierPlan.BuyLine();
+                    bl.productId = l.productId;
+                    bl.brand = l.brand;
+                    bl.name = l.name;
+                    bl.gtin = l.gtin;
+                    bl.ml = l.ml;
+                    bl.quantity = l.quantity;
+                    bl.unitCostUsd = round(atTarget.unitCostUsd);
+                    bl.subtotalUsd = round(atTarget.unitCostUsd * l.quantity);
+                    if (!targetSupplierId.equals(g.supplierId)) {
+                        bl.movedFromSupplierId = g.supplierId;
+                        bl.movedFromSupplierName = g.name;
+                    }
+                    plan.buy.add(bl);
+                    plan.buyUnits += l.quantity;
+                    plan.buySubtotalUsd += bl.subtotalUsd;
+                } else {
+                    SingleSupplierPlan.CouldNotBuy c = new SingleSupplierPlan.CouldNotBuy();
+                    c.productId = l.productId;
+                    c.brand = l.brand;
+                    c.name = l.name;
+                    c.gtin = l.gtin;
+                    c.quantity = l.quantity;
+                    c.currentSupplierName = g.name;
+                    c.reason = "No disponible en " + plan.targetSupplierName;
+                    plan.couldNotBuy.add(c);
+                }
+            }
+        }
+        plan.buyPerfumes = plan.buy.size();
+        plan.buySubtotalUsd = round(plan.buySubtotalUsd);
+        return plan;
     }
 
     /** Calcula Y persiste un plan DRAFT (reemplaza drafts anteriores del consolidado). */
