@@ -26,6 +26,15 @@ public interface SupplierOfferRepository extends JpaRepository<SupplierOffer, Lo
     List<SupplierOffer> findByProduct_IdAndInStockTrueAndSupplier_ActiveTrue(Long productId);
     long countByInStockTrue();
 
+    /**
+     * Indice compacto de TODAS las ofertas (proyeccion, sin cargar entidades): una sola consulta
+     * para que el admin pueda filtrar el catalogo por proveedor / sold out sin N+1.
+     */
+    @Query("select new org.example.backendbvaberiaperfumes.dto.OfferIndexRow("
+            + "o.product.id, o.supplier.id, o.supplier.name, o.supplier.active, o.inStock, o.costUsd, o.gtinStatus) "
+            + "from SupplierOffer o")
+    List<org.example.backendbvaberiaperfumes.dto.OfferIndexRow> findOfferIndex();
+
     /** IDs de productos que tienen oferta de este proveedor (para el ripple al desactivar/eliminar). */
     @Query("select distinct o.product.id from SupplierOffer o where o.supplier.id = :supplierId")
     List<Long> findProductIdsBySupplier(Long supplierId);

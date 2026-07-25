@@ -134,6 +134,22 @@ class SingleSupplierPlanTest {
         assertEquals("Club", plan.couldNotBuy.get(0).name);
     }
 
+    /** El indice de ofertas (proyeccion a record) debe traer proveedor y estado de stock reales. */
+    @Test
+    void indiceDeOfertasDevuelveProveedorYStock() {
+        Supplier zimaxx = supplierRepo.findByName("Zimaxx").orElseThrow();
+        Product p = product("IDX-1", "Lattafa", "Indice Test");
+        offer(p, zimaxx, "IDX-1-ZX", 11.0);
+
+        var row = offerRepo.findOfferIndex().stream()
+                .filter(r -> p.getId().equals(r.productId()))
+                .findFirst().orElseThrow();
+        assertEquals(zimaxx.getId(), row.supplierId());
+        assertEquals("Zimaxx", row.supplierName());
+        assertTrue(row.inStock());
+        assertEquals(11.0, row.costUsd(), 0.001);
+    }
+
     private OrderItem item(Order o, Product p, int qty, double unitPricePen) {
         OrderItem it = new OrderItem();
         it.setOrder(o); it.setProduct(p); it.setQuantity(qty); it.setUnitPricePen(unitPricePen);

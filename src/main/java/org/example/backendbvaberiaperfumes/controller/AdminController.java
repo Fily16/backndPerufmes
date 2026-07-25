@@ -328,6 +328,16 @@ public class AdminController {
     }
 
     /**
+     * Indice de ofertas de TODO el catalogo en una sola consulta (proyeccion compacta).
+     * Lo consume la pantalla de Productos para filtrar por proveedor / sold out / sin codigo
+     * sin pedir las ofertas producto por producto.
+     */
+    @GetMapping("/offers-index")
+    public List<org.example.backendbvaberiaperfumes.dto.OfferIndexRow> offersIndex() {
+        return offerRepo.findOfferIndex();
+    }
+
+    /**
      * Ofertas de TODOS los proveedores para un producto + cual define el precio publicado.
      * Para la vista multi-proveedor del admin (comparar costos, ver estado del GTIN).
      */
