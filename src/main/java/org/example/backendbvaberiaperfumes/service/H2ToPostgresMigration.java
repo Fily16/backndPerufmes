@@ -40,11 +40,22 @@ public class H2ToPostgresMigration implements CommandLineRunner {
         this.target = target;
     }
 
-    /** Orden padre -> hijo para respetar llaves foráneas al insertar. */
+    /**
+     * Orden padre -> hijo para respetar llaves foráneas al insertar.
+     * MANTENER ESTA LISTA AL DIA: cada entidad/tabla nueva que deba sobrevivir la migracion se agrega aqui
+     * (si no, sus datos NO se copian). Hoy estan las 26 entidades de model/.
+     * FK reales (JPA): supplier_offers/supplier_constraints -> suppliers (+ products), orders -> consolidados,
+     * order_items/order_promos -> orders, promotion_items -> promotions, retail_* -> products,
+     * purchase_plan_lines -> purchase_plans. El resto guarda ids sueltos (Long sin FK): el orden solo es prolijo.
+     * Una tabla que aun no existe en el H2 de origen se omite al copiar (ver copyTable).
+     */
     private static final String[] TABLES = {
-            "admins", "app_config", "suppliers", "products", "consolidados", "promotions",
-            "supplier_offers", "orders", "order_items", "order_promos", "promotion_items",
-            "retail_inventory", "retail_sales"
+            "admins", "app_config", "suppliers", "products", "consolidados", "promotions", "media_images",
+            "supplier_offers", "supplier_constraints", "orders", "order_items", "order_promos", "promotion_items",
+            "retail_inventory", "retail_sales",
+            "import_batches", "match_candidates", "image_cache", "missing_resolution",
+            "purchase_plans", "purchase_plan_lines",
+            "nso_records", "product_nso", "nso_candidates", "nso_aliases", "nso_events"
     };
 
     @Override
@@ -129,12 +140,26 @@ public class H2ToPostgresMigration implements CommandLineRunner {
     }
 
     private void resetSequence(Connection pg, String table) {
-        String sql = "SELECT setval(pg_get_serial_sequence('" + table + "','id'), " +
+        // Tablas con clave asignada (nso_records, product_nso) no tienen columna id: un MAX(id) fallido
+        // abortaria TODA la transaccion de Postgres, asi que se saltan antes de ejecutar nada.
+        if (!hasIdColumn(pg, table)) return;
+        // IDENTITY -> secuencia serial de la columna; SEQUENCE de Hibernate (tablas NSO) -> "<tabla>_seq".
+        // Si no existe ninguna, setval(NULL, ...) devuelve NULL sin error.
+        String sql = "SELECT setval(COALESCE(pg_get_serial_sequence('" + table + "','id'), " +
+                "CAST(to_regclass('" + table + "_seq') AS text)), " +
                 "GREATEST((SELECT COALESCE(MAX(id),0) FROM " + table + "), 1))";
         try (Statement st = pg.createStatement()) {
             st.execute(sql);
         } catch (SQLException e) {
             System.out.println("[MIGRATION]   (secuencia " + table + " no reajustada: " + e.getMessage() + ")");
+        }
+    }
+
+    private boolean hasIdColumn(Connection pg, String table) {
+        try (ResultSet rs = pg.getMetaData().getColumns(null, null, table, "id")) {
+            return rs.next();
+        } catch (SQLException e) {
+            return false;
         }
     }
 }

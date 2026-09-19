@@ -3,12 +3,15 @@ package org.example.backendbvaberiaperfumes.controller;
 import org.example.backendbvaberiaperfumes.dto.NotesImport;
 import org.example.backendbvaberiaperfumes.dto.SuggestResult;
 import org.example.backendbvaberiaperfumes.model.Product;
-import org.example.backendbvaberiaperfumes.model.SupplierOffer;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.service.PricingService;
 import org.example.backendbvaberiaperfumes.service.ProductService;
 import org.example.backendbvaberiaperfumes.service.RecommendationService;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
+import org.example.backendbvaberiaperfumes.service.nso.NsoService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Arrays;
@@ -16,6 +19,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -27,14 +31,19 @@ public class ProductController {
     private final PricingService pricingService;
     private final SupplierOfferRepository offerRepo;
     private final RecommendationService recommendationService;
+    private final NsoGate nsoGate;
+    private final NsoService nsoService;
 
     public ProductController(ProductService productService, PricingService pricingService,
                             SupplierOfferRepository offerRepo,
-                            RecommendationService recommendationService) {
+                            RecommendationService recommendationService, NsoGate nsoGate,
+                            NsoService nsoService) {
         this.productService = productService;
         this.pricingService = pricingService;
         this.offerRepo = offerRepo;
         this.recommendationService = recommendationService;
+        this.nsoGate = nsoGate;
+        this.nsoService = nsoService;
     }
 
     /** Sugerencias para el dropdown del buscador (nombre/marca/SKU/UPC). */
@@ -43,7 +52,7 @@ public class ProductController {
                                        @RequestParam(required = false, defaultValue = "8") int limit) {
         if (q == null || q.isBlank()) return List.of();
         String query = q.toLowerCase().trim();
-        return productService.search(q).stream()
+        return publicFilter(productService.search(q)).stream()
                 .filter(p -> !Boolean.FALSE.equals(p.getAvailable()))
                 .sorted((a, b) -> Integer.compare(relevance(b, query), relevance(a, query)))
                 .limit(Math.max(1, Math.min(limit, 20)))
@@ -69,7 +78,7 @@ public class ProductController {
     @GetMapping("/{id}/related")
     public List<Product> related(@PathVariable Long id,
                                  @RequestParam(required = false, defaultValue = "8") int limit) {
-        return recommendationService.relatedFor(id, Math.max(1, Math.min(limit, 24)));
+        return publicFilter(recommendationService.relatedFor(id, Math.max(1, Math.min(limit, 24))));
     }
 
     /** Cross-sell para el carrito: recomendaciones combinadas de varios productos. */
@@ -83,7 +92,7 @@ public class ProductController {
                 })
                 .filter(java.util.Objects::nonNull)
                 .collect(Collectors.toList());
-        return recommendationService.crossSell(idList, Math.max(1, Math.min(limit, 24)));
+        return publicFilter(recommendationService.crossSell(idList, Math.max(1, Math.min(limit, 24))));
     }
 
     @GetMapping
@@ -109,58 +118,44 @@ public class ProductController {
             Set<Long> inStock = new HashSet<>(offerRepo.findInStockProductIds());
             result = result.stream().filter(p -> inStock.contains(p.getId())).collect(Collectors.toList());
         }
-        return result;
+        return publicFilter(result);
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<Product> getById(@PathVariable Long id) {
         return productService.getById(id)
+                .filter(p -> isAdminRequest() || nsoGate.isPublicId(p.getId()))
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    @GetMapping("/{id}/pricing")
-    public ResponseEntity<Map<String, Object>> getProductPricing(@PathVariable Long id) {
-        return productService.getById(id).map(product -> {
-            Map<String, Object> pricing = new HashMap<>();
-            double landedCostUsd = pricingService.calculateLandedCostUsd(
-                    product.getPriceUsd(), product.getWeightG());
-            double costPen = pricingService.calculateCostPen(landedCostUsd);
-
-            pricing.put("product", product);
-            pricing.put("shippingCostUsd", pricingService.calculateShippingCostUsd(product.getWeightG()));
-            pricing.put("landedCostUsd", landedCostUsd);
-            pricing.put("costPen", costPen);
-            pricing.put("suggestedPrice80", pricingService.suggestedPrice(costPen, 80));
-            pricing.put("suggestedPrice100", pricingService.suggestedPrice(costPen, 100));
-            pricing.put("suggestedPrice120", pricingService.suggestedPrice(costPen, 120));
-            pricing.put("exchangeRate", pricingService.getExchangeRate());
-
-            // --- Modelo nuevo: oferta mas barata en stock + precio sugerido al publico ---
-            int weightG = product.getWeightG() != null ? product.getWeightG() : 600;
-            List<SupplierOffer> offers = offerRepo.findByProduct_IdAndInStockTrue(id);
-            offers.stream()
-                    .filter(o -> o.getCostUsd() != null)
-                    .min(java.util.Comparator.comparingDouble(SupplierOffer::getCostUsd))
-                    .ifPresent(best -> {
-                        pricing.put("cheapestOfferUsd", best.getCostUsd());
-                        pricing.put("cheapestSupplier", best.getSupplier() != null ? best.getSupplier().getName() : null);
-                        pricing.put("suggestedPublicPricePen", pricingService.suggestedPublicPricePen(best.getCostUsd(), weightG));
-                    });
-            pricing.put("offers", offers);
-            return ResponseEntity.ok(pricing);
-        }).orElse(ResponseEntity.notFound().build());
+    /** El gate solo afecta peticiones anonimas: el ERP conserva acceso al catalogo completo. */
+    private List<Product> publicFilter(List<Product> products) {
+        if (isAdminRequest()) return products;
+        return nsoGate.filterPublic(products);
     }
+
+    private boolean isAdminRequest() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.isAuthenticated() && !(auth instanceof AnonymousAuthenticationToken);
+    }
+
+    // El desglose de costos de proveedor (antes GET /api/products/{id}/pricing, publico)
+    // se movio a GET /api/admin/products/{id}/pricing (AdminController): expone costos USD.
 
     // --- Admin endpoints ---
     @PostMapping
     public Product create(@RequestBody Product product) {
-        return productService.save(product);
+        Product saved = productService.save(product);
+        // NSO: un perfume nuevo se verifica al instante (sin lista NSO cargada no escribe nada).
+        rematchNso(saved.getId());
+        return saved;
     }
 
     @PutMapping("/{id}")
     public ResponseEntity<Product> update(@PathVariable Long id, @RequestBody Product product) {
         return productService.getById(id).map(existing -> {
+            String identityBefore = nsoIdentity(existing);
             if (product.getName() != null) existing.setName(product.getName());
             if (product.getBrand() != null) existing.setBrand(product.getBrand());
             if (product.getPriceUsd() != null) existing.setPriceUsd(product.getPriceUsd());
@@ -178,8 +173,22 @@ public class ProductController {
             if (product.getCategory() != null) existing.setCategory(product.getCategory());
             if (product.getStockPricePen() != null) existing.setStockPricePen(product.getStockPricePen());
             if (product.getPriceLocked() != null) existing.setPriceLocked(product.getPriceLocked());
-            return ResponseEntity.ok(productService.save(existing));
+            Product saved = productService.save(existing);
+            // NSO: si cambio algo que identifica al perfume (marca, nombre, ml, tipo, categoria, codigo) se re-verifica.
+            if (!Objects.equals(identityBefore, nsoIdentity(saved))) rematchNso(saved.getId());
+            return ResponseEntity.ok(saved);
         }).orElse(ResponseEntity.notFound().build());
+    }
+
+    /** Lo que usa el matcher NSO para reconocer un perfume (si cambia, su NSO puede cambiar). */
+    private static String nsoIdentity(Product p) {
+        return String.join("|", String.valueOf(p.getBrand()), String.valueOf(p.getName()), String.valueOf(p.getMl()),
+                String.valueOf(p.getType()), String.valueOf(p.getCategory()), String.valueOf(p.getGtin()));
+    }
+
+    private void rematchNso(Long productId) {
+        if (productId == null) return;
+        nsoService.runAfterCommit("NSO del perfume #" + productId, () -> nsoService.rematchProducts(List.of(productId)));
     }
 
     /** Importacion masiva de notas olfativas (generada offline por tools/build_notes_dataset.py). */

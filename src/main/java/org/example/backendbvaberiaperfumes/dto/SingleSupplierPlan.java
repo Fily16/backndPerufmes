@@ -19,6 +19,8 @@ public class SingleSupplierPlan {
     public List<BuyLine> buy = new ArrayList<>();
     /** Grupo 3: productos que tenían oferta en otro proveedor pero NO en el objetivo. */
     public List<CouldNotBuy> couldNotBuy = new ArrayList<>();
+    /** Pedidos sin NSO (filtro NSO activo): no se compran en ningún proveedor. Misma forma que en AllocationResponse. */
+    public List<AllocationResponse.NsoBlockedItem> nsoBlocked = new ArrayList<>();
 
     public int buyPerfumes;
     public int buyUnits;

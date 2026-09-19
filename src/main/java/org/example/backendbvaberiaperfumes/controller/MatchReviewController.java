@@ -9,6 +9,7 @@ import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.service.DuplicateScanService;
 import org.example.backendbvaberiaperfumes.service.ProductMergeService;
+import org.example.backendbvaberiaperfumes.service.nso.NsoService;
 import org.example.backendbvaberiaperfumes.util.GtinCanonicalizer;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -30,18 +31,21 @@ public class MatchReviewController {
     private final SupplierOfferRepository offerRepo;
     private final ProductMergeService mergeService;
     private final DuplicateScanService scanService;
+    private final NsoService nsoService;
     private final ObjectMapper json = new ObjectMapper();
 
     public MatchReviewController(MatchCandidateRepository candidateRepo,
                                  ProductRepository productRepo,
                                  SupplierOfferRepository offerRepo,
                                  ProductMergeService mergeService,
-                                 DuplicateScanService scanService) {
+                                 DuplicateScanService scanService,
+                                 NsoService nsoService) {
         this.candidateRepo = candidateRepo;
         this.productRepo = productRepo;
         this.offerRepo = offerRepo;
         this.mergeService = mergeService;
         this.scanService = scanService;
+        this.nsoService = nsoService;
     }
 
     // =====================================================================
@@ -172,9 +176,11 @@ public class MatchReviewController {
         String raw = body != null ? body.get("gtin") : null;
         if (raw == null || raw.isBlank()) {
             // Limpiar el UPC es valido (deja el producto sin codigo).
+            boolean hadGtin = p.getGtin() != null;
             p.setGtin(null);
             p.setGtinConflict(false);
             productRepo.save(p);
+            if (hadGtin) rematchNso(id);
             Map<String, Object> ok = new LinkedHashMap<>();
             ok.put("id", id);
             ok.put("gtin", null);
@@ -204,13 +210,20 @@ public class MatchReviewController {
             }
         }
 
+        boolean changed = !canon.equals(p.getGtin());
         p.setGtin(canon);
         p.setGtinConflict(false);
         productRepo.save(p);
+        if (changed) rematchNso(id);
         Map<String, Object> ok = new LinkedHashMap<>();
         ok.put("id", id);
         ok.put("gtin", canon);
         return ResponseEntity.ok(ok);
+    }
+
+    /** NSO: el codigo de barras puede reconocer (o dejar de reconocer) el NSO del perfume: se re-verifica. */
+    private void rematchNso(Long productId) {
+        nsoService.runAfterCommit("NSO del perfume #" + productId, () -> nsoService.rematchProducts(List.of(productId)));
     }
 
     /** Escanea el catalogo completo y puebla la cola de revision. */

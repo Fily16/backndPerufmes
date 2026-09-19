@@ -5,6 +5,7 @@ import org.example.backendbvaberiaperfumes.dto.SingleSupplierPlan;
 import org.example.backendbvaberiaperfumes.model.*;
 import org.example.backendbvaberiaperfumes.repository.*;
 import org.example.backendbvaberiaperfumes.service.allocation.AllocationOptimizer;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,6 +22,10 @@ import java.util.stream.Collectors;
  * La logica de optimizacion vive en service/allocation/AllocationOptimizer;
  * las restricciones de proveedor son datos (SupplierConstraint), ya no hay
  * un "shape Zimaxx" cableado en el codigo.
+ *
+ * Filtro NSO (NsoGate): con el filtro activo, la demanda de perfumes que no se pueden importar se separa ANTES
+ * de optimizar (sale en AllocationResponse.nsoBlocked) y tampoco se sugiere como relleno de tienda. Con el filtro
+ * apagado todo se comporta exactamente como antes.
  */
 @Service
 public class AllocationService {
@@ -34,12 +39,14 @@ public class AllocationService {
     private final PurchasePlanRepository planRepo;
     private final AllocationOptimizer optimizer;
     private final PricingService pricing;
+    private final NsoGate nsoGate;
+    private final ProductNsoRepository productNsoRepo;
 
     public AllocationService(ConsolidadoService consolidadoService, SupplierRepository supplierRepo,
                              SupplierOfferRepository offerRepo, ProductRepository productRepo,
                              AppConfigRepository configRepo, SupplierConstraintRepository constraintRepo,
                              PurchasePlanRepository planRepo, AllocationOptimizer optimizer,
-                             PricingService pricing) {
+                             PricingService pricing, NsoGate nsoGate, ProductNsoRepository productNsoRepo) {
         this.consolidadoService = consolidadoService;
         this.supplierRepo = supplierRepo;
         this.offerRepo = offerRepo;
@@ -49,6 +56,8 @@ public class AllocationService {
         this.planRepo = planRepo;
         this.optimizer = optimizer;
         this.pricing = pricing;
+        this.nsoGate = nsoGate;
+        this.productNsoRepo = productNsoRepo;
     }
 
     /** Calculo advisory (endpoint historico): no persiste nada. */
@@ -108,6 +117,8 @@ public class AllocationService {
                 }
             }
         }
+        // Los pedidos sin NSO no se compran en ningun proveedor: se listan aparte (misma forma).
+        plan.nsoBlocked.addAll(resp.nsoBlocked);
         plan.buyPerfumes = plan.buy.size();
         plan.buySubtotalUsd = round(plan.buySubtotalUsd);
         return plan;
@@ -116,8 +127,10 @@ public class AllocationService {
     /** Calcula Y persiste un plan DRAFT (reemplaza drafts anteriores del consolidado). */
     @Transactional
     public AllocationResponse computeAndSaveDraft(Long consolidadoId) {
-        AllocationOptimizer.Result r = runOptimizer(consolidadoId);
-        AllocationResponse resp = buildResponse(consolidadoId, r);
+        // Las lineas salen SOLO de la demanda permitida (la bloqueada por NSO no llega al optimizador).
+        Run run = runOptimizer(consolidadoId);
+        AllocationOptimizer.Result r = run.result();
+        AllocationResponse resp = buildResponse(consolidadoId, run);
 
         for (PurchasePlan old : planRepo.findByConsolidadoIdAndStatus(consolidadoId, "DRAFT")) {
             old.setStatus("SUPERSEDED");
@@ -166,6 +179,13 @@ public class AllocationService {
             throw new IllegalStateException("Solo se puede confirmar un plan DRAFT (actual: " + plan.getStatus() + ")");
         }
 
+        // Filtro NSO: un borrador calculado ANTES de activar el filtro puede traer perfumes que ya no se compran.
+        // No se recortan lineas en silencio (los totales quedarian mal): hay que volver a calcular el plan.
+        List<Long> blocked = blockedProductsOf(plan);
+        if (!blocked.isEmpty()) {
+            throw new NsoBlockedPlanException(blocked);
+        }
+
         List<AllocationResponse.MarginWarning> warnings = marginWarningsOf(plan);
         if (!warnings.isEmpty() && !force) {
             throw new MarginFloorException(warnings);
@@ -199,6 +219,8 @@ public class AllocationService {
 
         List<Map<String, Object>> out = new ArrayList<>();
         for (Map.Entry<Long, Integer> e : demand.entrySet()) {
+            // Sin NSO (filtro activo): no se compra, no hay margen que cuidar. Se ve en allocation.nsoBlocked.
+            if (!nsoGate.isPurchasable(e.getKey())) continue;
             Product p = productRepo.findById(e.getKey()).orElse(null);
             if (p == null) continue;
             int weightG = p.getWeightG() != null ? p.getWeightG() : 600;
@@ -244,11 +266,39 @@ public class AllocationService {
         }
     }
 
+    /** El plan a confirmar trae perfumes sin NSO (filtro activo): el controller responde 400 {message}. */
+    public static class NsoBlockedPlanException extends IllegalStateException {
+        public final transient List<Long> productIds;
+        public NsoBlockedPlanException(List<Long> productIds) {
+            super("Este plan incluye " + productIds.size() + " perfume(s) sin NSO que ya no se pueden comprar. "
+                    + "Vuelve a calcular el plan.");
+            this.productIds = productIds;
+        }
+    }
+
     // =====================================================================
 
-    private AllocationOptimizer.Result runOptimizer(Long consolidadoId) {
-        Map<Long, Integer> demand = consolidadoService.getActiveDemandByProduct(consolidadoId);
-        Map<Long, Double> avgPrice = consolidadoService.getActiveAvgPriceByProduct(consolidadoId);
+    /** Resultado del optimizador + la demanda separada por NSO (que nunca entro al motor). */
+    private record Run(AllocationOptimizer.Result result, List<AllocationResponse.NsoBlockedItem> nsoBlocked) {}
+
+    private Run runOptimizer(Long consolidadoId) {
+        Map<Long, Integer> demand = new LinkedHashMap<>(consolidadoService.getActiveDemandByProduct(consolidadoId));
+        Map<Long, Double> avgPrice = new LinkedHashMap<>(consolidadoService.getActiveAvgPriceByProduct(consolidadoId));
+
+        // Filtro NSO: lo que no se puede importar sale de la demanda ANTES de optimizar (el optimizador no cambia).
+        // Con el filtro apagado isActive() es false y la demanda queda intacta.
+        Map<Long, Integer> blockedDemand = new LinkedHashMap<>();
+        if (nsoGate.isActive()) {
+            Iterator<Map.Entry<Long, Integer>> it = demand.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<Long, Integer> e = it.next();
+                if (nsoGate.isPurchasable(e.getKey())) continue;
+                blockedDemand.put(e.getKey(), e.getValue());
+                avgPrice.remove(e.getKey());
+                it.remove();
+            }
+        }
+
         Map<Long, Product> products = new HashMap<>();
         for (Long pid : demand.keySet()) {
             productRepo.findById(pid).ifPresent(p -> products.put(pid, p));
@@ -256,10 +306,53 @@ public class AllocationService {
         boolean forceEnabled = "true".equalsIgnoreCase(
                 configValue("allocation_priority_enabled",
                         configValue("zimaxx_priority_enabled", "true")));
-        return optimizer.optimize(demand, avgPrice, products, forceEnabled);
+        return new Run(optimizer.optimize(demand, avgPrice, products, forceEnabled), nsoBlockedItems(blockedDemand));
     }
 
-    private AllocationResponse buildResponse(Long consolidadoId, AllocationOptimizer.Result r) {
+    /** Filas de nsoBlocked: producto + unidades demandadas + estado NSO actual (SIN_VERIFICAR si no tiene fila). */
+    private List<AllocationResponse.NsoBlockedItem> nsoBlockedItems(Map<Long, Integer> blockedDemand) {
+        if (blockedDemand.isEmpty()) return List.of();
+        Map<Long, Product> products = new HashMap<>();
+        for (Product p : productRepo.findAllById(blockedDemand.keySet())) products.put(p.getId(), p);
+        Map<Long, String> statuses = new HashMap<>();
+        for (ProductNso st : productNsoRepo.findByProductIdIn(blockedDemand.keySet())) {
+            statuses.put(st.getProductId(), st.getStatus());
+        }
+        List<AllocationResponse.NsoBlockedItem> out = new ArrayList<>();
+        for (Map.Entry<Long, Integer> e : blockedDemand.entrySet()) {
+            Product p = products.get(e.getKey());
+            AllocationResponse.NsoBlockedItem b = new AllocationResponse.NsoBlockedItem();
+            b.productId = e.getKey();
+            b.brand = p != null ? p.getBrand() : null;
+            b.name = p != null ? p.getName() : ("#" + e.getKey());
+            b.ml = p != null ? p.getMl() : null;
+            b.quantity = e.getValue();
+            b.status = statuses.getOrDefault(e.getKey(), ProductNso.STATUS_SIN_VERIFICAR);
+            out.add(b);
+        }
+        // Orden estable para la pantalla: marca y nombre.
+        out.sort(Comparator.comparing((AllocationResponse.NsoBlockedItem b) -> lower(b.brand))
+                .thenComparing(b -> lower(b.name))
+                .thenComparing(b -> b.productId));
+        return out;
+    }
+
+    /** Productos del plan que hoy no se pueden comprar (vacio con el filtro NSO apagado). */
+    private List<Long> blockedProductsOf(PurchasePlan plan) {
+        if (!nsoGate.isActive()) return List.of();
+        Set<Long> out = new LinkedHashSet<>();
+        for (PurchasePlanLine l : plan.getLines()) {
+            if (l.getProductId() != null && !nsoGate.isPurchasable(l.getProductId())) out.add(l.getProductId());
+        }
+        return new ArrayList<>(out);
+    }
+
+    private static String lower(String s) {
+        return s == null ? "" : s.toLowerCase(Locale.ROOT);
+    }
+
+    private AllocationResponse buildResponse(Long consolidadoId, Run run) {
+        AllocationOptimizer.Result r = run.result();
         AllocationResponse resp = new AllocationResponse();
         resp.consolidadoId = consolidadoId;
         resp.baselineTotalUsd = round(r.baselineTotalUsd);
@@ -338,6 +431,14 @@ public class AllocationService {
             resp.unfulfillable.add(u);
         }
 
+        // Demanda sin NSO (filtro activo): no entro al optimizador; la admin avisa a esos clientes.
+        resp.nsoBlocked.addAll(run.nsoBlocked());
+        if (!resp.nsoBlocked.isEmpty()) {
+            int units = resp.nsoBlocked.stream().mapToInt(b -> b.quantity).sum();
+            resp.notes.add(resp.nsoBlocked.size() + " perfume(s) pedido(s) sin NSO (" + units
+                    + " unidad(es)) no se pueden importar y quedaron fuera de la compra. Avisa a esos clientes.");
+        }
+
         // Analisis forzar/saltar + avisos de margen + ventas perdidas.
         for (AllocationOptimizer.SupplierDecision d : r.skipAnalysis) {
             AllocationResponse.SupplierDecision sd = new AllocationResponse.SupplierDecision();
@@ -407,7 +508,7 @@ public class AllocationService {
         if (!resp.unfulfillable.isEmpty()) {
             resp.notes.add(resp.unfulfillable.size() + " producto(s) sin stock en ningun proveedor.");
         }
-        if (r.lines.isEmpty() && resp.unfulfillable.isEmpty()) {
+        if (r.lines.isEmpty() && resp.unfulfillable.isEmpty() && resp.nsoBlocked.isEmpty()) {
             resp.notes.add("No hay demanda de clientes activa en este consolidado.");
         }
         return resp;
@@ -418,6 +519,8 @@ public class AllocationService {
         List<SupplierOffer> offers = offerRepo.findBySupplier_Id(supplier.getId()).stream()
                 .filter(o -> Boolean.TRUE.equals(o.getInStock()) && o.getCostUsd() != null)
                 .filter(o -> !demanded.contains(o.getProduct().getId()))
+                // Filtro NSO: no se sugiere comprar para tienda lo que no se puede importar.
+                .filter(o -> nsoGate.isPurchasable(o.getProduct().getId()))
                 .sorted(Comparator.comparingDouble(SupplierOffer::getCostUsd).reversed())
                 .limit(15)
                 .toList();

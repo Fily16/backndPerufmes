@@ -4,6 +4,11 @@ import org.example.backendbvaberiaperfumes.model.AppConfig;
 import org.example.backendbvaberiaperfumes.repository.AppConfigRepository;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Supplier;
+
 /**
  * Replaces all Excel formulas from Configuración, Catálogo Maestro, and Calculadora sheets.
  * All pricing/cost calculations centralized here.
@@ -13,8 +18,32 @@ public class PricingService {
 
     private final AppConfigRepository configRepo;
 
+    /**
+     * Foto de app_config durante UNA operacion masiva (preview/commit de un import): cada precio simulado leia 7
+     * claves de app_config, o sea ~6,300 consultas para un Excel de 900 filas (minutos contra Aiven). Dentro de
+     * withConfigSnapshot cada clave se lee una sola vez; fuera, todo sigue leyendose en runtime como siempre.
+     */
+    private final ThreadLocal<Map<String, Optional<String>>> snapshot = new ThreadLocal<>();
+
     public PricingService(AppConfigRepository configRepo) {
         this.configRepo = configRepo;
+    }
+
+    /** Corre body leyendo cada clave de app_config una sola vez (anidable: la foto de afuera manda). */
+    public <T> T withConfigSnapshot(Supplier<T> body) {
+        if (snapshot.get() != null) return body.get();
+        snapshot.set(new HashMap<>());
+        try {
+            return body.get();
+        } finally {
+            snapshot.remove();
+        }
+    }
+
+    private Optional<String> configValue(String key) {
+        Map<String, Optional<String>> snap = snapshot.get();
+        if (snap == null) return configRepo.findByConfigKey(key).map(AppConfig::getConfigValue);
+        return snap.computeIfAbsent(key, k -> configRepo.findByConfigKey(k).map(AppConfig::getConfigValue));
     }
 
     // --- Config getters ---
@@ -43,8 +72,7 @@ public class PricingService {
     }
 
     public String getYapeNumber() {
-        return configRepo.findByConfigKey("yape_number")
-                .map(AppConfig::getConfigValue).orElse("903250695");
+        return configValue("yape_number").orElse("903250695");
     }
 
     public double getDepositPerUnit() {
@@ -146,8 +174,7 @@ public class PricingService {
 
     /** Estrategia del costo base del precio publicado: CHEAPEST | PRIORITY | WORST_PLAUSIBLE. */
     public String getPricingBasis() {
-        return configRepo.findByConfigKey("pricing_basis")
-                .map(AppConfig::getConfigValue)
+        return configValue("pricing_basis")
                 .filter(v -> v != null && !v.isBlank())
                 .map(String::toUpperCase)
                 .orElse("CHEAPEST");
@@ -194,18 +221,18 @@ public class PricingService {
 
     // --- Helpers ---
     private double getConfigDouble(String key, double defaultVal) {
-        return configRepo.findByConfigKey(key)
-                .map(c -> {
-                    try { return Double.parseDouble(c.getConfigValue()); }
-                    catch (NumberFormatException e) { return defaultVal; }
+        return configValue(key)
+                .map(v -> {
+                    try { return Double.parseDouble(v); }
+                    catch (NumberFormatException | NullPointerException e) { return defaultVal; }
                 }).orElse(defaultVal);
     }
 
     private int getConfigInt(String key, int defaultVal) {
-        return configRepo.findByConfigKey(key)
-                .map(c -> {
-                    try { return Integer.parseInt(c.getConfigValue()); }
-                    catch (NumberFormatException e) { return defaultVal; }
+        return configValue(key)
+                .map(v -> {
+                    try { return Integer.parseInt(v); }
+                    catch (NumberFormatException | NullPointerException e) { return defaultVal; }
                 }).orElse(defaultVal);
     }
 }

@@ -9,6 +9,7 @@ import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.service.ApifyImageService;
 import org.example.backendbvaberiaperfumes.service.ImageEnrichService;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -25,16 +26,18 @@ public class ApifyController {
     private final AppConfigRepository configRepo;
     private final ProductRepository productRepo;
     private final SupplierOfferRepository offerRepo;
+    private final NsoGate nsoGate;
 
     public ApifyController(ImageEnrichService enrich, ImageCacheRepository cacheRepo, ApifyImageService apify,
                            AppConfigRepository configRepo, ProductRepository productRepo,
-                           SupplierOfferRepository offerRepo) {
+                           SupplierOfferRepository offerRepo, NsoGate nsoGate) {
         this.enrich = enrich;
         this.cacheRepo = cacheRepo;
         this.apify = apify;
         this.configRepo = configRepo;
         this.productRepo = productRepo;
         this.offerRepo = offerRepo;
+        this.nsoGate = nsoGate;
     }
 
     /**
@@ -150,11 +153,16 @@ public class ApifyController {
         return ResponseEntity.ok(m);
     }
 
-    /** Productos que NO tienen foto — para rellenarlas. Sin supplierId = TODO el catálogo. */
+    /**
+     * Productos que NO tienen foto — para rellenarlas. Sin supplierId = TODO el catálogo.
+     * Con el filtro NSO activo se saltan los perfumes ocultos en la tienda (ahorra créditos de Apify),
+     * salvo includeHidden=true.
+     */
     @GetMapping("/missing")
-    public List<Map<String, Object>> missing(@RequestParam(required = false) Long supplierId) {
+    public List<Map<String, Object>> missing(@RequestParam(required = false) Long supplierId,
+                                             @RequestParam(required = false, defaultValue = "false") boolean includeHidden) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (Product p : productsFor(supplierId)) {
+        for (Product p : visible(productsFor(supplierId), includeHidden)) {
             boolean noImg = p.getImageUrl() == null || p.getImageUrl().isBlank();
             if (!noImg || Boolean.TRUE.equals(p.getArchived())) continue;
             out.add(row(p));
@@ -167,15 +175,34 @@ public class ApifyController {
      * vive en el frontend: es el único juez fiel de "se ve / no se ve").
      * Sin supplierId = TODO el catálogo (antes solo se escaneaba por proveedor y los
      * productos sin oferta de ese proveedor jamás se revisaban).
+     * Con el filtro NSO activo se saltan los perfumes ocultos en la tienda, salvo includeHidden=true.
      */
     @GetMapping("/photos")
-    public List<Map<String, Object>> photos(@RequestParam(required = false) Long supplierId) {
+    public List<Map<String, Object>> photos(@RequestParam(required = false) Long supplierId,
+                                            @RequestParam(required = false, defaultValue = "false") boolean includeHidden) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (Product p : productsFor(supplierId)) {
+        for (Product p : visible(productsFor(supplierId), includeHidden)) {
             if (Boolean.TRUE.equals(p.getArchived())) continue;
             if (p.getImageUrl() == null || p.getImageUrl().isBlank()) continue;
             out.add(row(p));
         }
+        return out;
+    }
+
+    /** Firmas previas (sin includeHidden), usadas por llamadas directas/tests: equivalen a includeHidden=false. */
+    public List<Map<String, Object>> missing(Long supplierId) {
+        return missing(supplierId, false);
+    }
+
+    public List<Map<String, Object>> photos(Long supplierId) {
+        return photos(supplierId, false);
+    }
+
+    /** Gate NSO activo y sin includeHidden: solo los perfumes que la tienda muestra (CON_NSO). Si no, todos. */
+    private List<Product> visible(List<Product> products, boolean includeHidden) {
+        if (includeHidden || !nsoGate.isActive()) return products;
+        List<Product> out = new ArrayList<>(products.size());
+        for (Product p : products) if (nsoGate.isPublicId(p.getId())) out.add(p);
         return out;
     }
 

@@ -18,6 +18,11 @@ public class ImportSummary {
     private int reviewQueued;       // candidatos enviados a la cola de revision del admin
     private int suspiciousRows;     // filas con costo fuera de rango, guardadas fuera de stock
     private int gtinAdopted;        // productos sin UPC que adoptaron el codigo entrante (unificados)
+    // NSO de los perfumes tocados por el import (0 si no hay lista NSO cargada)
+    private int nsoConNso;
+    private int nsoReview;
+    private int nsoBrandOnly;
+    private int nsoNone;
     private final List<String> notes = new ArrayList<>();
 
     public void addNote(String n) { notes.add(n); }
@@ -48,5 +53,13 @@ public class ImportSummary {
     public void setSuspiciousRows(int v) { this.suspiciousRows = v; }
     public int getGtinAdopted() { return gtinAdopted; }
     public void setGtinAdopted(int v) { this.gtinAdopted = v; }
+    public int getNsoConNso() { return nsoConNso; }
+    public void setNsoConNso(int v) { this.nsoConNso = v; }
+    public int getNsoReview() { return nsoReview; }
+    public void setNsoReview(int v) { this.nsoReview = v; }
+    public int getNsoBrandOnly() { return nsoBrandOnly; }
+    public void setNsoBrandOnly(int v) { this.nsoBrandOnly = v; }
+    public int getNsoNone() { return nsoNone; }
+    public void setNsoNone(int v) { this.nsoNone = v; }
     public List<String> getNotes() { return notes; }
 }

@@ -1,5 +1,6 @@
 package org.example.backendbvaberiaperfumes.controller;
 
+import org.example.backendbvaberiaperfumes.dto.ConsolidadoActiveDTO;
 import org.example.backendbvaberiaperfumes.dto.ConsolidadoPublicDTO;
 import org.example.backendbvaberiaperfumes.dto.FullBreakdownResponse;
 import org.example.backendbvaberiaperfumes.model.Consolidado;
@@ -29,11 +30,15 @@ public class ConsolidadoController {
         return ResponseEntity.ok(consolidadoService.getCurrentPublic());
     }
 
-    // Public: get active consolidado info (solo lectura; antes CREABA en cada visita anonima)
+    /**
+     * Publico: cual es el consolidado ABIERTO (solo lectura; antes CREABA en cada visita anonima). Devuelve un DTO
+     * minimo: la entidad arrastraba los pedidos con nombres, telefonos, DNI y direcciones de todos los clientes
+     * y los costos/ganancias del lote. 404 si no hay uno abierto (el checkout lo usa para mostrar "cerrado").
+     */
     @GetMapping("/active")
-    public ResponseEntity<Consolidado> getActive() {
+    public ResponseEntity<ConsolidadoActiveDTO> getActive() {
         Consolidado active = consolidadoService.getActiveOrNull();
-        return active != null ? ResponseEntity.ok(active) : ResponseEntity.notFound().build();
+        return active != null ? ResponseEntity.ok(ConsolidadoActiveDTO.of(active)) : ResponseEntity.notFound().build();
     }
 
     // Admin: list all consolidados

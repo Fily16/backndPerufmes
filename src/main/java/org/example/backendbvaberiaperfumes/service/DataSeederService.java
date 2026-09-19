@@ -271,18 +271,33 @@ public class DataSeederService implements CommandLineRunner {
         }
     }
 
+    /** Cuenta de vendedor que versiones antiguas creaban con clave FIJA en el codigo (repo publico). */
+    static final String LEGACY_SOCIO_EMAIL = "socio@aromastudio.pe";
+
+    /**
+     * Borra la cuenta legacy socio@aromastudio.pe: su clave estaba escrita en el codigo publico, asi que era una
+     * puerta abierta al panel. El socio entra con su propia cuenta (EXTRA_ADMINS). Solo se conserva si esa misma
+     * cuenta aparece en EXTRA_ADMINS (entonces su clave viene de una variable, no del codigo). Ninguna tabla tiene
+     * FK a admins (los pedidos guardan el nombre de quien atendio), asi que borrarla no rompe nada. Idempotente.
+     */
+    private void removeLegacySocioAccount() {
+        boolean managedByEnv = extraAdmins != null && java.util.Arrays.stream(extraAdmins.split(";"))
+                .map(e -> e.trim().split(":", 2)[0].trim())
+                .anyMatch(LEGACY_SOCIO_EMAIL::equalsIgnoreCase);
+        if (managedByEnv) return;
+        adminRepo.findByEmail(LEGACY_SOCIO_EMAIL).ifPresent(a -> {
+            adminRepo.delete(a);
+            System.out.println("[SEGURIDAD] Cuenta legacy eliminada: " + LEGACY_SOCIO_EMAIL + " (clave fija en el codigo)");
+        });
+    }
+
     private void seedAdmin() {
         if (!adminRepo.existsByEmail(adminEmail)) {
             Admin admin = new Admin(adminEmail, passwordEncoder.encode(adminPassword), "Administrador");
             adminRepo.save(admin);
             System.out.println("Admin created: " + adminEmail);
         }
-        // Segundo vendedor (compañero) para el ERP multiusuario
-        String socioEmail = "socio@aromastudio.pe";
-        if (!adminRepo.existsByEmail(socioEmail)) {
-            adminRepo.save(new Admin(socioEmail, passwordEncoder.encode("socio123"), "Socio"));
-            System.out.println("Admin created: " + socioEmail + " (vendedor)");
-        }
+        removeLegacySocioAccount();
 
         // Admins extra desde la variable de entorno EXTRA_ADMINS
         // Formato: correo:clave:Nombre;correo2:clave2:Nombre2  (el Nombre es opcional)
@@ -326,7 +341,13 @@ public class DataSeederService implements CommandLineRunner {
             Map.entry("max_plausible_cost_usd", new String[]{"400", "Costo maximo plausible (USD): sobre esto la fila importada es sospechosa"}),
             Map.entry("form_sale_api_key", new String[]{UUID.randomUUID().toString().replace("-", "").substring(0, 16), "API Key para Google Form (auto-generada)"}),
             Map.entry("home_banners", new String[]{DEFAULT_BANNERS_JSON, "Banners del home (JSON): imageUrl,title,subtitle,ctaText,linkType(product|brand|category|search|url),linkValue"}),
-            Map.entry("home_promos", new String[]{"[]", "Tiles de promociones del home (JSON, misma estructura que home_banners). Vacio = oculto."})
+            Map.entry("home_promos", new String[]{"[]", "Tiles de promociones del home (JSON, misma estructura que home_banners). Vacio = oculto."}),
+            // --- Sistema NSO (Notificacion Sanitaria). El filtro nace APAGADO: la admin lo enciende despues de revisar. ---
+            Map.entry("nso_gate_enabled", new String[]{"false", "Mostrar y comprar solo perfumes con NSO (true/false). Se activa desde el panel NSO despues de revisar"}),
+            Map.entry("nso_review_min_score", new String[]{"0.66", "Parecido minimo (0-1) para proponer un codigo NSO a revision"}),
+            Map.entry("nso_accept_can_codes", new String[]{"true", "Aceptar NSO de otros paises de la CAN (Colombia, Bolivia, Ecuador) como validos (true/false)"}),
+            Map.entry("nso_catalog_version", new String[]{"0", "Version de la lista de NSO cargada (sube en cada carga; no editar a mano)"}),
+            Map.entry("nso_rules_version", new String[]{"1", "Version de las reglas de reconocimiento NSO (sube cuando cambian las reglas; no editar a mano)"})
         );
 
         configs.forEach((key, val) -> {

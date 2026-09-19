@@ -9,10 +9,12 @@ import org.example.backendbvaberiaperfumes.repository.OrderItemRepository;
 import org.example.backendbvaberiaperfumes.repository.OrderRepository;
 import org.example.backendbvaberiaperfumes.service.ConsolidadoService;
 import org.example.backendbvaberiaperfumes.service.EmailService;
+import org.example.backendbvaberiaperfumes.service.nso.NsoBlockedException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -56,6 +58,9 @@ public class OrderController {
             // Notificar por correo cuando el cliente finaliza su pedido.
             emailService.sendNewOrderNotification(order.getId());
             return ResponseEntity.ok(order);
+        } catch (NsoBlockedException e) {
+            // Perfumes que ya no se venden: el carrito los quita usando unavailableProductIds.
+            return ResponseEntity.status(400).body(blockedBody(e));
         } catch (IllegalArgumentException e) {
             // Si hay un error (ej. el código no existe o el celular no coincide), devolvemos un 400 amigable
             return ResponseEntity.status(400).body(Map.of("message", e.getMessage()));
@@ -156,11 +161,21 @@ public class OrderController {
                     request.getClientPhone(),
                     request.getItems());
             return ResponseEntity.ok(order);
+        } catch (NsoBlockedException e) {
+            return ResponseEntity.status(400).body(blockedBody(e));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(400).body(Map.of("message", e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(500).body(Map.of("message", "Error al editar el pedido."));
         }
+    }
+
+    /** 400 del contrato para pedidos con perfumes no disponibles: {message, unavailableProductIds}. */
+    private static Map<String, Object> blockedBody(NsoBlockedException e) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", e.getMessage());
+        body.put("unavailableProductIds", e.getUnavailableProductIds());
+        return body;
     }
 
     // Admin: update client info (name, phone)

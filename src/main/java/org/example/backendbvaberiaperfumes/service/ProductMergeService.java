@@ -8,6 +8,7 @@ import org.example.backendbvaberiaperfumes.model.RetailInventory;
 import org.example.backendbvaberiaperfumes.model.RetailSale;
 import org.example.backendbvaberiaperfumes.model.SupplierOffer;
 import org.example.backendbvaberiaperfumes.repository.*;
+import org.example.backendbvaberiaperfumes.service.nso.NsoService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +36,7 @@ public class ProductMergeService {
     private final PromotionItemRepository promoItemRepo;
     private final MatchCandidateRepository candidateRepo;
     private final ExcelImportService importService;
+    private final NsoService nsoService;
 
     public ProductMergeService(ProductRepository productRepo,
                                SupplierOfferRepository offerRepo,
@@ -43,7 +45,8 @@ public class ProductMergeService {
                                RetailSaleRepository retailSaleRepo,
                                PromotionItemRepository promoItemRepo,
                                MatchCandidateRepository candidateRepo,
-                               ExcelImportService importService) {
+                               ExcelImportService importService,
+                               NsoService nsoService) {
         this.productRepo = productRepo;
         this.offerRepo = offerRepo;
         this.orderItemRepo = orderItemRepo;
@@ -52,6 +55,7 @@ public class ProductMergeService {
         this.promoItemRepo = promoItemRepo;
         this.candidateRepo = candidateRepo;
         this.importService = importService;
+        this.nsoService = nsoService;
     }
 
     public static class MergeResult {
@@ -199,6 +203,11 @@ public class ProductMergeService {
             mc.setResolvedBy("merge");
             candidateRepo.save(mc);
         }
+
+        // 7b. NSO: la decision/rechazos del duplicado pasan al canonico y se re-verifica con sus ofertas ya
+        //     re-apuntadas. Tras el COMMIT de la fusion (asi ve todo confirmado y no corre si hay rollback).
+        nsoService.runAfterCommit("NSO tras fusionar #" + duplicateId + " en #" + canonicalId,
+                () -> nsoService.onMerge(canonicalId, duplicateId));
 
         // 8. Reprecia el canonico desde sus ofertas (ahora incluye las del duplicado).
         importService.recomputeProductPrice(canonical);

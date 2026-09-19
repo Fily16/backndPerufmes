@@ -52,6 +52,11 @@ public class AllocationController {
         try {
             PurchasePlan plan = allocationService.confirmPlan(id, planId, force);
             return ResponseEntity.ok(plan);
+        } catch (AllocationService.NsoBlockedPlanException e) {
+            // Borrador calculado antes de activar el filtro NSO: 400 (el 409 es solo la guardia de margen).
+            return ResponseEntity.badRequest().body(Map.of(
+                    "message", e.getMessage(),
+                    "unavailableProductIds", e.productIds));
         } catch (AllocationService.MarginFloorException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
                     "error", e.getMessage(),

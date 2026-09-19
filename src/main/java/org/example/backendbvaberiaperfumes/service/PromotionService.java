@@ -6,12 +6,15 @@ import org.example.backendbvaberiaperfumes.model.Promotion;
 import org.example.backendbvaberiaperfumes.model.PromotionItem;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.PromotionRepository;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class PromotionService {
@@ -19,12 +22,14 @@ public class PromotionService {
     private final PromotionRepository promotionRepo;
     private final ProductRepository productRepo;
     private final PricingService pricing;
+    private final NsoGate nsoGate;
 
     public PromotionService(PromotionRepository promotionRepo, ProductRepository productRepo,
-                            PricingService pricing) {
+                            PricingService pricing, NsoGate nsoGate) {
         this.promotionRepo = promotionRepo;
         this.productRepo = productRepo;
         this.pricing = pricing;
+        this.nsoGate = nsoGate;
     }
 
     @Transactional(readOnly = true)
@@ -38,7 +43,24 @@ public class PromotionService {
     public List<Promotion> activeForStore() {
         List<Promotion> list = promotionRepo.findActiveForStore(LocalDate.now());
         list.forEach(p -> p.getItems().size());
+        // Gate NSO activo: una promo con algun perfume del catalogo que ya no se vende no se muestra en la tienda.
+        if (nsoGate.isActive()) {
+            list = new ArrayList<>(list);
+            list.removeIf(p -> !isPublicPromo(p));
+        }
         return list;
+    }
+
+    /**
+     * La tienda puede mostrar/vender la promo: todos sus perfumes del catalogo se pueden comprar (gate apagado:
+     * siempre true). Los perfumes exclusivos de la promo (sin productId) no se revisan.
+     */
+    public boolean isPublicPromo(Promotion promo) {
+        if (promo == null || !nsoGate.isActive()) return true;
+        for (PromotionItem it : promo.getItems()) {
+            if (it.getProductId() != null && !nsoGate.isPurchasable(it.getProductId())) return false;
+        }
+        return true;
     }
 
     @Transactional(readOnly = true)
@@ -122,6 +144,9 @@ public class PromotionService {
         if (items.isEmpty()) {
             throw new IllegalArgumentException("La promoción debe incluir al menos un perfume.");
         }
+        // Solo una promo que queda ACTIVA no puede llevar perfumes sin NSO: ocultarla (active=false) o editarla para
+        // QUITAR el perfume bloqueado siempre se puede, aunque todavia lo tenga.
+        if (Boolean.TRUE.equals(promo.getActive())) rejectBlockedItems(items);
         promo.getItems().addAll(items);
 
         // Ganancia: manual si viene; si no, sugerida (solo si todos son del catálogo con costo).
@@ -133,6 +158,24 @@ public class PromotionService {
             throw new IllegalArgumentException(
                     "Debes ingresar la ganancia de la promoción (incluye un perfume exclusivo o sin costo).");
         }
+    }
+
+    /**
+     * Gate NSO activo: una promo ACTIVA no puede llevar perfumes del catalogo sin NSO (la tienda la ocultaria y no se
+     * podria vender). Mensaje para la duena con los nombres. Los perfumes exclusivos (sin productId) no se validan.
+     */
+    private void rejectBlockedItems(List<PromotionItem> items) {
+        if (!nsoGate.isActive()) return;
+        Map<Long, String> blocked = new LinkedHashMap<>();
+        for (PromotionItem it : items) {
+            Long pid = it.getProductId();
+            if (pid != null && !nsoGate.isPurchasable(pid)) blocked.putIfAbsent(pid, "«" + it.getName() + "»");
+        }
+        if (blocked.isEmpty()) return;
+        List<String> names = new ArrayList<>(blocked.values());
+        throw new IllegalArgumentException(names.size() == 1
+                ? names.get(0) + " no tiene NSO: no se puede mostrar en una promoción activa. Quítalo u oculta la promoción para guardar."
+                : String.join(", ", names) + " no tienen NSO: no se pueden mostrar en una promoción activa. Quítalos u oculta la promoción para guardar.");
     }
 
     /** Ganancia sugerida para el editor: precio − Σ puesto en Perú (solo ítems del catálogo). */

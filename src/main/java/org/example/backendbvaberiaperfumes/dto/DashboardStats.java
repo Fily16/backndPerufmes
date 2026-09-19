@@ -11,6 +11,12 @@ public class DashboardStats {
     private int retailSalesCount;
     private double retailRevenuePen;
     private double retailProfitPen;
+    // NSO (perfumes vigentes por estado) y si el filtro de la tienda esta activo
+    private int nsoConNso;
+    private int nsoPending;
+    private int nsoMarca;
+    private int nsoSin;
+    private boolean nsoGateEffective;
 
     public long getTotalProducts() { return totalProducts; }
     public void setTotalProducts(long v) { this.totalProducts = v; }
@@ -32,4 +38,14 @@ public class DashboardStats {
     public void setRetailRevenuePen(double v) { this.retailRevenuePen = v; }
     public double getRetailProfitPen() { return retailProfitPen; }
     public void setRetailProfitPen(double v) { this.retailProfitPen = v; }
+    public int getNsoConNso() { return nsoConNso; }
+    public void setNsoConNso(int v) { this.nsoConNso = v; }
+    public int getNsoPending() { return nsoPending; }
+    public void setNsoPending(int v) { this.nsoPending = v; }
+    public int getNsoMarca() { return nsoMarca; }
+    public void setNsoMarca(int v) { this.nsoMarca = v; }
+    public int getNsoSin() { return nsoSin; }
+    public void setNsoSin(int v) { this.nsoSin = v; }
+    public boolean isNsoGateEffective() { return nsoGateEffective; }
+    public void setNsoGateEffective(boolean v) { this.nsoGateEffective = v; }
 }

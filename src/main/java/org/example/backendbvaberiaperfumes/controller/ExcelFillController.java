@@ -9,6 +9,7 @@ import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
 import org.example.backendbvaberiaperfumes.service.AllocationService;
 import org.example.backendbvaberiaperfumes.service.excelfill.SupplierExcelFiller;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
 import org.example.backendbvaberiaperfumes.util.GtinCanonicalizer;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -30,13 +31,15 @@ public class ExcelFillController {
     private final SupplierRepository supplierRepo;
     private final SupplierOfferRepository offerRepo;
     private final SupplierExcelFiller filler;
+    private final NsoGate nsoGate;
 
     public ExcelFillController(AllocationService allocationService, SupplierRepository supplierRepo,
-                               SupplierOfferRepository offerRepo, SupplierExcelFiller filler) {
+                               SupplierOfferRepository offerRepo, SupplierExcelFiller filler, NsoGate nsoGate) {
         this.allocationService = allocationService;
         this.supplierRepo = supplierRepo;
         this.offerRepo = offerRepo;
         this.filler = filler;
+        this.nsoGate = nsoGate;
     }
 
     @PostMapping(value = "/consolidados/{consolidadoId}/suppliers/{supplierId}/fill-excel",
@@ -115,6 +118,9 @@ public class ExcelFillController {
 
         List<SupplierExcelFiller.OrderLine> orderLines = new ArrayList<>();
         for (Demand d : demand) {
+            // Filtro NSO defensivo: la asignacion ya excluye lo que no se puede importar, pero el Excel que se le
+            // manda al proveedor NUNCA debe pedir un perfume sin NSO (con el filtro apagado no quita nada).
+            if (!nsoGate.isPurchasable(d.productId())) continue;
             SupplierOffer o = d.productId() != null ? offerByProduct.get(d.productId()) : null;
             SupplierExcelFiller.OrderLine ol = new SupplierExcelFiller.OrderLine();
             ol.canonUpc = d.gtin() != null ? GtinCanonicalizer.canonicalize(d.gtin()).canonical14 : null;

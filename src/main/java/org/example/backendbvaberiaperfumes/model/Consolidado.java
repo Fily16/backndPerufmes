@@ -1,5 +1,6 @@
 package org.example.backendbvaberiaperfumes.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -59,6 +60,12 @@ public class Consolidado {
     @Column(length = 2000)
     private String notes;
 
+    /**
+     * Pedidos del lote (nombres, telefonos, DNI y direcciones de clientes). NUNCA se serializa con el consolidado:
+     * GET /api/consolidados/active es publico y antes publicaba toda la base de clientes. El panel los lee por
+     * GET /api/consolidados/{id}/orders (JWT).
+     */
+    @JsonIgnore
     @OneToMany(mappedBy = "consolidado", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Order> orders = new ArrayList<>();
 

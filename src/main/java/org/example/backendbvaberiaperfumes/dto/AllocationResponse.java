@@ -24,6 +24,19 @@ public class AllocationResponse {
     public List<LostSale> lostSales = new ArrayList<>();
     public double penaltiesUsd;                                // relleno + ventas perdidas (contable)
 
+    // --- NSO: demanda que NO entra a la compra (filtro NSO activo y el perfume no tiene NSO vigente) ---
+    public List<NsoBlockedItem> nsoBlocked = new ArrayList<>();
+
+    /** Perfume pedido que no se puede importar: se separa ANTES de optimizar (el optimizador no lo ve). */
+    public static class NsoBlockedItem {
+        public Long productId;
+        public String brand;
+        public String name;
+        public Integer ml;
+        public int quantity;           // unidades demandadas por los clientes
+        public String status;          // estado NSO (ProductNso.STATUS_*); SIN_VERIFICAR si no tiene fila
+    }
+
     public static class SupplierDecision {
         public Long supplierId;
         public String name;

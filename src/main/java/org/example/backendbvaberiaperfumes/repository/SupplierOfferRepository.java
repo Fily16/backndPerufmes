@@ -8,6 +8,16 @@ import java.util.List;
 import java.util.Optional;
 
 public interface SupplierOfferRepository extends JpaRepository<SupplierOffer, Long> {
+    /** Ofertas de productos vigentes con producto y proveedor en UNA consulta (rematch NSO masivo). */
+    @Query("select o from SupplierOffer o join fetch o.product p join fetch o.supplier "
+            + "where p.archived = false")
+    List<SupplierOffer> findAllForNsoMatching();
+
+    /** Ofertas de un grupo de productos con producto y proveedor (rematch NSO acotado, revision). */
+    @Query("select o from SupplierOffer o join fetch o.product p join fetch o.supplier "
+            + "where p.id in :productIds")
+    List<SupplierOffer> findForNsoByProductIds(@org.springframework.data.repository.query.Param("productIds")
+                                               java.util.Collection<Long> productIds);
     Optional<SupplierOffer> findBySupplier_IdAndOfferKey(Long supplierId, String offerKey);
 
     /** Borrado masivo en UNA sentencia (el derivado borra fila por fila: lentisimo en BD remota). */

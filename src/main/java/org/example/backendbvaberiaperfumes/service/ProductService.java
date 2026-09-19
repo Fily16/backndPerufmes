@@ -3,6 +3,7 @@ package org.example.backendbvaberiaperfumes.service;
 import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.repository.OrderItemRepository;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
+import org.example.backendbvaberiaperfumes.service.nso.NsoService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
@@ -13,10 +14,12 @@ public class ProductService {
 
     private final ProductRepository productRepo;
     private final OrderItemRepository orderItemRepo;
+    private final NsoService nsoService;
 
-    public ProductService(ProductRepository productRepo, OrderItemRepository orderItemRepo) {
+    public ProductService(ProductRepository productRepo, OrderItemRepository orderItemRepo, NsoService nsoService) {
         this.productRepo = productRepo;
         this.orderItemRepo = orderItemRepo;
+        this.nsoService = nsoService;
     }
 
     public List<Product> getAllProducts() {
@@ -91,6 +94,8 @@ public class ProductService {
     public void delete(Long id) {
         orderItemRepo.deleteByProductId(id);
         productRepo.deleteById(id);
+        // NSO: limpia estado y candidatos del perfume borrado, solo si el borrado se confirma.
+        nsoService.runAfterCommit("NSO tras borrar #" + id, () -> nsoService.onProductDeleted(id));
     }
 
     /**

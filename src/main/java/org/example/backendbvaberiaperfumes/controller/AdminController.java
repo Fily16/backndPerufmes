@@ -73,6 +73,9 @@ public class AdminController {
             for (OrderItem it : o.getItems()) {
                 Product p = it.getProduct();
                 if (p == null) continue;
+                // Filtro NSO activo: lo que no se puede importar no es un "faltante" a conseguir; se ve en
+                // allocation.nsoBlocked (con el filtro apagado no quita nada).
+                if (!nsoGate.isPurchasable(p.getId())) continue;
                 MissingItem mi = map.computeIfAbsent(p.getId(), k -> {
                     MissingItem x = new MissingItem();
                     x.setProductId(p.getId());
@@ -303,6 +306,8 @@ public class AdminController {
     @PostMapping("/retail/launch")
     public ResponseEntity<Map<String, Object>> launchToStock(@RequestBody List<Map<String, Object>> items) {
         int launched = 0;
+        // Gate NSO activo: los perfumes sin NSO no se lanzan (no se vuelven a comprar) y se devuelven en "blocked".
+        List<Map<String, Object>> blocked = new java.util.ArrayList<>();
         for (Map<String, Object> it : items) {
             if (it.get("productId") == null) continue;
             Long productId = ((Number) it.get("productId")).longValue();
@@ -310,6 +315,15 @@ public class AdminController {
             if (qty < 1) qty = 1;
             Product p = productRepo.findById(productId).orElse(null);
             if (p == null) continue;
+            if (!nsoGate.isPurchasable(productId)) {
+                if (blocked.stream().noneMatch(b -> productId.equals(b.get("productId")))) {
+                    Map<String, Object> b = new LinkedHashMap<>();
+                    b.put("productId", productId);
+                    b.put("name", org.example.backendbvaberiaperfumes.service.nso.NsoGate.displayName(p));
+                    blocked.add(b);
+                }
+                continue;
+            }
 
             int weightG = p.getWeightG() != null ? p.getWeightG() : 600;
             double priceUsd = p.getPriceUsd() != null ? p.getPriceUsd() : 0.0;
@@ -324,7 +338,59 @@ public class AdminController {
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("received", items.size());
         res.put("launched", launched);
+        res.put("blocked", blocked);
         return ResponseEntity.ok(res);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.example.backendbvaberiaperfumes.service.nso.NsoService nsoService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.example.backendbvaberiaperfumes.service.nso.NsoGate nsoGate;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private ProductNsoRepository productNsoRepo;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private NsoCandidateRepository nsoCandidateRepo;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+
+    /**
+     * Catalogo completo para las pantallas admin, SIN el filtro NSO de la tienda (mismo JSON de Product que el
+     * publico). Las pantallas admin dejan de usar GET /api/products: con token vencido ese cae como anonimo.
+     */
+    @GetMapping("/products")
+    public List<Product> adminProducts(@RequestParam(required = false, defaultValue = "false") boolean includeArchived) {
+        return includeArchived ? productRepo.findAll() : productRepo.findByArchivedFalse();
+    }
+
+    /**
+     * Alta manual de un perfume CON su NSO en una sola transaccion. Body = campos del formulario "Nuevo producto"
+     * + nso?: {code, createIfMissing?, declaredName?, titular?, ruc?}. El codigo se valida ANTES de crear nada.
+     * 200 {product, nso:{productId, status, nsoCode}} | 400 {message} | 404 {message, canCreate} | 409 {message}.
+     */
+    @PostMapping("/products")
+    public ResponseEntity<?> createProductWithNso(@RequestBody(required = false) Map<String, Object> body) {
+        if (body == null) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Faltan los datos del perfume."));
+        }
+        try {
+            Map<String, Object> fields = new LinkedHashMap<>(body);
+            Object nsoRaw = fields.remove("nso");
+            Product product = objectMapper.convertValue(fields, Product.class);
+            org.example.backendbvaberiaperfumes.service.nso.NsoService.ManualCode nso = nsoRaw instanceof Map<?, ?>
+                    ? objectMapper.convertValue(nsoRaw, org.example.backendbvaberiaperfumes.service.nso.NsoService.ManualCode.class)
+                    : null;
+            return ResponseEntity.ok(nsoService.createProductWithNso(product, nso));
+        } catch (Exception e) {
+            if (e.getClass() == IllegalArgumentException.class && e.getCause() != null) {
+                // convertValue: tipos invalidos en el body (ej. ml con letras)
+                return ResponseEntity.badRequest().body(Map.of("message", "Revisa los datos del perfume: hay un campo con un valor inválido."));
+            }
+            return NsoAdminController.error(e);
+        }
     }
 
     /**
@@ -383,6 +449,44 @@ public class AdminController {
         return ResponseEntity.ok(out);
     }
 
+    /**
+     * Desglose de costos de UN producto (flete, landed, precios sugeridos, ofertas en stock).
+     * Movido desde GET /api/products/{id}/pricing, que era publico y exponia costos de proveedor.
+     */
+    @GetMapping("/products/{id}/pricing")
+    public ResponseEntity<Map<String, Object>> productPricing(@PathVariable Long id) {
+        Product product = productRepo.findById(id).orElse(null);
+        if (product == null) return ResponseEntity.notFound().build();
+
+        Map<String, Object> pricing = new java.util.HashMap<>();
+        double landedCostUsd = pricingService.calculateLandedCostUsd(
+                product.getPriceUsd(), product.getWeightG());
+        double costPen = pricingService.calculateCostPen(landedCostUsd);
+
+        pricing.put("product", product);
+        pricing.put("shippingCostUsd", pricingService.calculateShippingCostUsd(product.getWeightG()));
+        pricing.put("landedCostUsd", landedCostUsd);
+        pricing.put("costPen", costPen);
+        pricing.put("suggestedPrice80", pricingService.suggestedPrice(costPen, 80));
+        pricing.put("suggestedPrice100", pricingService.suggestedPrice(costPen, 100));
+        pricing.put("suggestedPrice120", pricingService.suggestedPrice(costPen, 120));
+        pricing.put("exchangeRate", pricingService.getExchangeRate());
+
+        // --- Modelo nuevo: oferta mas barata en stock + precio sugerido al publico ---
+        int weightG = product.getWeightG() != null ? product.getWeightG() : 600;
+        List<org.example.backendbvaberiaperfumes.model.SupplierOffer> offers = offerRepo.findByProduct_IdAndInStockTrue(id);
+        offers.stream()
+                .filter(o -> o.getCostUsd() != null)
+                .min(java.util.Comparator.comparingDouble(org.example.backendbvaberiaperfumes.model.SupplierOffer::getCostUsd))
+                .ifPresent(best -> {
+                    pricing.put("cheapestOfferUsd", best.getCostUsd());
+                    pricing.put("cheapestSupplier", best.getSupplier() != null ? best.getSupplier().getName() : null);
+                    pricing.put("suggestedPublicPricePen", pricingService.suggestedPublicPricePen(best.getCostUsd(), weightG));
+                });
+        pricing.put("offers", offers);
+        return ResponseEntity.ok(pricing);
+    }
+
     // --- ERP: desglose de precio por producto (costo puesto en Perú + consolidado + stock) ---
     @GetMapping("/products/pricing")
     public List<Map<String, Object>> productsPricing() {
@@ -412,6 +516,18 @@ public class AdminController {
         stats.setRetailSalesCount((int) retailService.getAllSales().size());
         stats.setRetailRevenuePen(retailService.getTotalRevenue());
         stats.setRetailProfitPen(retailService.getTotalProfit());
+
+        // NSO: perfumes vigentes (no archivados) por estado, igual que las tarjetas de /admin/nso.
+        // nsoPending = perfumes con opciones por revisar (mismo numero que la lista "Por revisar" y el badge).
+        Map<String, Long> nso = new java.util.HashMap<>();
+        for (Object[] row : productNsoRepo.countCurrentProductsByStatus()) {
+            nso.merge((String) row[0], ((Number) row[1]).longValue(), Long::sum);
+        }
+        stats.setNsoConNso(nso.getOrDefault(org.example.backendbvaberiaperfumes.model.ProductNso.STATUS_CON_NSO, 0L).intValue());
+        stats.setNsoMarca(nso.getOrDefault(org.example.backendbvaberiaperfumes.model.ProductNso.STATUS_MARCA_CON_NSO, 0L).intValue());
+        stats.setNsoSin(nso.getOrDefault(org.example.backendbvaberiaperfumes.model.ProductNso.STATUS_SIN_NSO, 0L).intValue());
+        stats.setNsoPending((int) nsoCandidateRepo.countCurrentProductsWithPending());
+        stats.setNsoGateEffective(nsoGate.isActive());
         return ResponseEntity.ok(stats);
     }
 
@@ -422,7 +538,12 @@ public class AdminController {
     }
 
     @PutMapping("/config/{key}")
-    public ResponseEntity<AppConfig> updateConfig(@PathVariable String key, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> updateConfig(@PathVariable String key, @RequestBody Map<String, String> body) {
+        // El filtro NSO y sus opciones tienen su propia pantalla: ahi se valida (lista cargada), se registra el
+        // cambio y se refresca el filtro. Cambiarlas aqui se saltaria todo eso.
+        if (key != null && key.trim().toLowerCase(java.util.Locale.ROOT).startsWith("nso_")) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Esta opción se cambia desde la pantalla NSO."));
+        }
         AppConfig config = configRepo.findByConfigKey(key)
                 .orElseGet(() -> {
                     AppConfig newConfig = new AppConfig();
@@ -466,14 +587,49 @@ public class AdminController {
     }
 
     // --- Stock Purchase (Compra para Tienda) ---
+    // Errores de negocio (sin consolidado activo, producto bloqueado, etc.) -> 400 {message}
+    // en vez de un 500 generico, para que el panel muestre el motivo.
     @PostMapping("/stock-purchase/preview")
-    public ResponseEntity<BreakdownSection> previewStockPurchase(@RequestBody StockPurchaseRequest request) {
-        return ResponseEntity.ok(consolidadoService.previewStockPurchase(request));
+    public ResponseEntity<?> previewStockPurchase(@RequestBody StockPurchaseRequest request) {
+        try {
+            return ResponseEntity.ok(consolidadoService.previewStockPurchase(request));
+        } catch (org.example.backendbvaberiaperfumes.service.nso.NsoBlockedException e) {
+            return ResponseEntity.badRequest().body(stockBlockedBody(e));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", String.valueOf(e.getMessage())));
+        }
     }
 
     @PostMapping("/stock-purchase")
-    public ResponseEntity<Order> createStockPurchase(@RequestBody StockPurchaseRequest request) {
-        return ResponseEntity.ok(consolidadoService.createStockPurchase(request));
+    public ResponseEntity<?> createStockPurchase(@RequestBody StockPurchaseRequest request) {
+        try {
+            return ResponseEntity.ok(consolidadoService.createStockPurchase(request));
+        } catch (org.example.backendbvaberiaperfumes.service.nso.NsoBlockedException e) {
+            return ResponseEntity.badRequest().body(stockBlockedBody(e));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /**
+     * 400 {message, unavailableProductIds} de la compra de tienda con perfumes sin NSO. El mensaje es para la
+     * duena (pantalla admin), asi que si nombra el NSO, a diferencia del que ve el cliente.
+     */
+    private Map<String, Object> stockBlockedBody(org.example.backendbvaberiaperfumes.service.nso.NsoBlockedException e) {
+        Map<Long, Product> byId = new LinkedHashMap<>();
+        for (Product p : productRepo.findAllById(e.getUnavailableProductIds())) byId.put(p.getId(), p);
+        List<String> names = new java.util.ArrayList<>();
+        for (Long id : e.getUnavailableProductIds()) {
+            Product p = byId.get(id);
+            names.add("«" + (p != null ? org.example.backendbvaberiaperfumes.service.nso.NsoGate.displayName(p) : "#" + id) + "»");
+        }
+        String message = (names.size() == 1
+                ? names.get(0) + " no tiene NSO y no se puede volver a comprar. Quítalo de la compra."
+                : String.join(", ", names) + " no tienen NSO y no se pueden volver a comprar. Quítalos de la compra.");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", message);
+        body.put("unavailableProductIds", e.getUnavailableProductIds());
+        return body;
     }
 
     // --- Consolidados v2: apertura programada, plazo e imagen del aviso ---

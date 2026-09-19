@@ -7,6 +7,7 @@ import org.example.backendbvaberiaperfumes.dto.ImportSummary;
 import org.example.backendbvaberiaperfumes.dto.ParsedRow;
 import org.example.backendbvaberiaperfumes.model.MatchCandidate;
 import org.example.backendbvaberiaperfumes.model.Product;
+import org.example.backendbvaberiaperfumes.model.ProductNso;
 import org.example.backendbvaberiaperfumes.model.Supplier;
 import org.example.backendbvaberiaperfumes.model.SupplierOffer;
 import org.example.backendbvaberiaperfumes.repository.MatchCandidateRepository;
@@ -16,6 +17,8 @@ import org.example.backendbvaberiaperfumes.repository.SupplierRepository;
 import org.example.backendbvaberiaperfumes.service.matching.FingerprintExtractor;
 import org.example.backendbvaberiaperfumes.service.matching.MatchingEngine;
 import org.example.backendbvaberiaperfumes.service.matching.ProductFingerprint;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
+import org.example.backendbvaberiaperfumes.service.nso.NsoService;
 import org.example.backendbvaberiaperfumes.service.parser.GenericSupplierParser;
 import org.example.backendbvaberiaperfumes.service.parser.SupplierExcelParser;
 import org.example.backendbvaberiaperfumes.util.PerfumeNormalizer;
@@ -40,6 +43,9 @@ public class ExcelImportService {
     private final MatchingEngine engine;
     private final MatchCandidateRepository candidateRepo;
     private final CostBasisService costBasis;
+    // NSO: NsoService NO depende de este servicio (no hay ciclo de beans); NsoGate solo lee config/repos.
+    private final NsoService nsoService;
+    private final NsoGate nsoGate;
     private final ObjectMapper json = new ObjectMapper();
 
     public ExcelImportService(List<SupplierExcelParser> parserList,
@@ -51,7 +57,9 @@ public class ExcelImportService {
                               PricingService pricing,
                               MatchingEngine engine,
                               MatchCandidateRepository candidateRepo,
-                              CostBasisService costBasis) {
+                              CostBasisService costBasis,
+                              NsoService nsoService,
+                              NsoGate nsoGate) {
         // Se registran los parsers afinados por nombre; el generico NO (es fallback).
         for (SupplierExcelParser p : parserList) {
             if (!GenericSupplierParser.SENTINEL.equals(p.supplierName())) {
@@ -67,6 +75,8 @@ public class ExcelImportService {
         this.engine = engine;
         this.candidateRepo = candidateRepo;
         this.costBasis = costBasis;
+        this.nsoService = nsoService;
+        this.nsoGate = nsoGate;
     }
 
     // =====================================================================
@@ -125,6 +135,11 @@ public class ExcelImportService {
 
     @Transactional(readOnly = true)
     public ImportPreview buildPreview(Supplier supplier, ParsedData pd) {
+        // Cada fila simula su precio: la config de precios se lee UNA vez para todo el archivo (sin N+1).
+        return pricing.withConfigSnapshot(() -> buildPreviewInternal(supplier, pd));
+    }
+
+    private ImportPreview buildPreviewInternal(Supplier supplier, ParsedData pd) {
         ImportPreview p = new ImportPreview();
         p.supplierName = supplier.getName();
         p.generic = pd.generic;
@@ -150,6 +165,9 @@ public class ExcelImportService {
         }
 
         Set<String> seen = new HashSet<>();
+        // Listas paralelas a p.rows (NO a pd.rows: el loop salta los duplicados del archivo) para el veredicto NSO.
+        List<ParsedRow> nsoRows = new ArrayList<>();
+        List<Long> nsoProductIds = new ArrayList<>();
         for (int i = 0; i < pd.rows.size(); i++) {
             ParsedRow row = pd.rows.get(i);
             OfferKey ok = offerKey(row, collisions);
@@ -232,8 +250,37 @@ public class ExcelImportService {
                 }
             }
             p.rows.add(line);
+            nsoRows.add(row);
+            nsoProductIds.add(match != null ? match.getId() : null);
         }
+        applyNsoVerdicts(p, supplier, nsoRows, nsoProductIds);
         return p;
+    }
+
+    /**
+     * NSO del preview (solo lectura, no escribe estados ni candidatos): un veredicto por linea mostrada + contadores.
+     * rows/productIds van alineados con p.rows. Sin lista NSO cargada: nsoCatalogLoaded=false y todo nso* en null/0.
+     */
+    private void applyNsoVerdicts(ImportPreview p, Supplier supplier, List<ParsedRow> rows, List<Long> productIds) {
+        p.nsoGateEnabled = nsoGate.isActive();
+        NsoService.PreviewResult nso = nsoService.matchPreviewRows(supplier, rows, productIds);
+        p.nsoCatalogLoaded = nso.isCatalogLoaded();
+        if (!nso.isCatalogLoaded()) return;
+        List<NsoService.RowVerdict> verdicts = nso.getRows();
+        for (int i = 0; i < p.rows.size() && i < verdicts.size(); i++) {
+            ImportPreview.Line line = p.rows.get(i);
+            NsoService.RowVerdict v = verdicts.get(i);
+            line.nsoStatus = v.getStatus();
+            line.nsoCode = v.getNsoCode();
+            line.nsoDeclaredName = v.getDeclaredName();
+            line.nsoTitular = v.getTitular();
+            line.nsoReason = v.getReason();
+            line.nsoCountry = v.getCountry();
+        }
+        p.nsoConNso = nso.getConNso();
+        p.nsoReview = nso.getReview();
+        p.nsoBrandOnly = nso.getBrandOnly();
+        p.nsoNone = nso.getNone();
     }
 
     /** Precio publico que quedaria si se publica esta fila (respeta priceLocked y otras ofertas activas). */
@@ -261,6 +308,11 @@ public class ExcelImportService {
 
     @Transactional
     public ImportSummary commit(Supplier supplier, List<ParsedRow> rows, Set<Integer> approvedSuspiciousIdx) {
+        // Igual que el preview: la config de precios se lee una vez para todo el commit (sin N+1 por producto).
+        return pricing.withConfigSnapshot(() -> commitInternal(supplier, rows, approvedSuspiciousIdx));
+    }
+
+    private ImportSummary commitInternal(Supplier supplier, List<ParsedRow> rows, Set<Integer> approvedSuspiciousIdx) {
         Long supplierId = supplier.getId();
         ImportSummary summary = new ImportSummary();
         summary.setSupplierName(supplier.getName());
@@ -444,6 +496,14 @@ public class ExcelImportService {
             }
         }
 
+        // NSO: re-verificar YA los perfumes tocados. Es SINCRONO y DENTRO de esta transaccion (no runAfterCommit)
+        // porque el resumen necesita los conteos: write() de NsoService se une a esta transaccion (REQUIRED) y ve
+        // los productos/ofertas aun sin confirmar. El lock NSO se suelta antes del commit del import (carrera
+        // minima con el rematch en segundo plano, ya conocida de la fase 1). Si el NSO fallara, la transaccion
+        // queda rollback-only y el import entero se revierte (nunca queda a medias). Sin lista NSO cargada no
+        // escribe nada y los conteos quedan en 0.
+        NsoService.RematchOutcome nso = nsoService.rematchProducts(touchedProducts);
+
         summary.setProductsCreated(created);
         summary.setOffersCreated(offersCreated);
         summary.setOffersUpdated(offersUpdated);
@@ -455,6 +515,10 @@ public class ExcelImportService {
         summary.setReviewQueued(reviewQueued);
         summary.setSuspiciousRows(suspicious);
         summary.setGtinAdopted(gtinAdopted);
+        summary.setNsoConNso(nso.count(ProductNso.STATUS_CON_NSO));
+        summary.setNsoReview(nso.count(ProductNso.STATUS_EN_REVISION));
+        summary.setNsoBrandOnly(nso.count(ProductNso.STATUS_MARCA_CON_NSO));
+        summary.setNsoNone(nso.count(ProductNso.STATUS_SIN_NSO));
         if (gtinAdopted > 0) {
             summary.addNote("Productos que ya existian SIN UPC y adoptaron el codigo entrante "
                     + "(unificados sin duplicar): " + gtinAdopted);
@@ -473,6 +537,11 @@ public class ExcelImportService {
         }
         if (reviewQueued > 0) {
             summary.addNote("Posibles duplicados enviados a la cola de revision: " + reviewQueued);
+        }
+        if (nso.getProcessed() > 0) {
+            summary.addNote("NSO de los perfumes de este archivo: " + summary.getNsoConNso() + " con NSO, "
+                    + summary.getNsoReview() + " por revisar, " + summary.getNsoBrandOnly()
+                    + " donde solo la marca tiene NSO y " + summary.getNsoNone() + " sin NSO.");
         }
         return summary;
     }

@@ -31,11 +31,13 @@ public class ConsolidadoService {
     private final PromotionRepository promotionRepo;
     private final CostBasisService costBasis;
     private final PurchasePlanRepository planRepo;
+    private final org.example.backendbvaberiaperfumes.service.nso.NsoGate nsoGate;
 
     public ConsolidadoService(ConsolidadoRepository consolidadoRepo, OrderRepository orderRepo,
                               ProductRepository productRepo, PricingService pricing,
                               RetailService retailService, PromotionRepository promotionRepo,
-                              CostBasisService costBasis, PurchasePlanRepository planRepo) {
+                              CostBasisService costBasis, PurchasePlanRepository planRepo,
+                              org.example.backendbvaberiaperfumes.service.nso.NsoGate nsoGate) {
         this.consolidadoRepo = consolidadoRepo;
         this.orderRepo = orderRepo;
         this.productRepo = productRepo;
@@ -44,6 +46,7 @@ public class ConsolidadoService {
         this.promotionRepo = promotionRepo;
         this.costBasis = costBasis;
         this.planRepo = planRepo;
+        this.nsoGate = nsoGate;
     }
 
     private static double nz(Double v) { return v != null ? v : 0; }
@@ -306,9 +309,23 @@ public class ConsolidadoService {
 
         List<OrderRequest.OrderItemRequest> itemReqs = request.getItems() != null
                 ? request.getItems() : new ArrayList<>();
+        java.util.Map<Long, Product> itemProducts = new LinkedHashMap<>();
         for (OrderRequest.OrderItemRequest itemReq : itemReqs) {
             Product product = productRepo.findById(itemReq.getProductId())
                     .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
+            itemProducts.putIfAbsent(product.getId(), product);
+        }
+
+        // Gate NSO: se revisan TODOS los perfumes del pedido de una vez (items + perfumes del catalogo dentro de
+        // las promos) para que el error liste todos los no disponibles, no solo el primero. Gate apagado: no-op.
+        if (nsoGate.isActive()) {
+            List<Product> toCheck = new ArrayList<>(itemProducts.values());
+            if (hasPromos) toCheck.addAll(promoCatalogProducts(request.getPromotions()));
+            nsoGate.assertPurchasable(toCheck);
+        }
+
+        for (OrderRequest.OrderItemRequest itemReq : itemReqs) {
+            Product product = itemProducts.get(itemReq.getProductId());
 
             newUnitsAdded += itemReq.getQuantity();
 
@@ -324,19 +341,7 @@ public class ConsolidadoService {
             }
 
             // Precio por CANAL (el backend manda, no el cliente).
-            double unitPrice;
-            if ("STOCK".equals(channel)) {
-                if (product.getStockPricePen() == null) {
-                    throw new IllegalArgumentException(product.getBrand() + " " + product.getName() + " no está disponible en stock.");
-                }
-                Integer stockQty = retailStock.get(product.getId());
-                if (stockQty == null || stockQty < itemReq.getQuantity()) {
-                    throw new IllegalArgumentException("No hay stock suficiente de " + product.getBrand() + " " + product.getName() + ".");
-                }
-                unitPrice = product.getStockPricePen();
-            } else {
-                unitPrice = product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0;
-            }
+            double unitPrice = backendUnitPrice(product, channel, itemReq.getQuantity(), retailStock);
 
             if (existingItem != null) {
                 existingItem.setQuantity(existingItem.getQuantity() + itemReq.getQuantity());
@@ -398,6 +403,23 @@ public class ConsolidadoService {
         }
 
         return saved;
+    }
+
+    /**
+     * Perfumes del catalogo que traen las promos del pedido (los items exclusivos, sin productId, no cuentan).
+     * Promos inexistentes se saltan: el loop de promos da su propio error ("ya no existe").
+     */
+    private List<Product> promoCatalogProducts(List<OrderRequest.PromoLineRequest> lines) {
+        java.util.Set<Long> ids = new LinkedHashSet<>();
+        for (OrderRequest.PromoLineRequest pl : lines) {
+            if (pl.getPromotionId() == null) continue;
+            promotionRepo.findById(pl.getPromotionId()).ifPresent(promo -> {
+                for (PromotionItem pi : promo.getItems()) {
+                    if (pi.getProductId() != null) ids.add(pi.getProductId());
+                }
+            });
+        }
+        return ids.isEmpty() ? List.of() : productRepo.findAllById(ids);
     }
 
     // --- Payment Verification ---
@@ -619,28 +641,88 @@ public class ConsolidadoService {
             oldUnits += oi.getQuantity();
         }
 
-        // Clear existing items (orphanRemoval=true deletes them from DB)
-        order.getItems().clear();
-
-        // Add new items
-        int newTotalUnits = 0;
-        for (OrderRequest.OrderItemRequest itemReq : newItems) {
-            Product product = productRepo.findById(itemReq.getProductId())
-                    .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
-
-            OrderItem item = new OrderItem();
-            item.setOrder(order);
-            item.setProduct(product);
-            item.setQuantity(itemReq.getQuantity());
-
-            double unitPrice = itemReq.getUnitPricePen() != null
-                    ? itemReq.getUnitPricePen()
-                    : (product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0);
-            item.setUnitPricePen(unitPrice);
-            item.calculateSubtotal();
-            order.getItems().add(item);
-            newTotalUnits += itemReq.getQuantity();
+        // El precio lo manda el BACKEND, nunca el cliente (antes se confiaba en unitPricePen
+        // del request y un cliente podia bajarse el precio). Reglas:
+        //  - producto que YA estaba en el pedido: conserva su precio y costo guardados (snapshot)
+        //  - producto nuevo: precio por canal, con la misma regla que createOrder
+        // Cantidades del mismo producto repetido en el request se suman en una sola linea.
+        String channel = "STOCK".equals(order.getChannel()) ? "STOCK" : "CONSOLIDADO";
+        java.util.Map<Long, OrderItem> previousByProduct = new LinkedHashMap<>();
+        for (OrderItem oi : order.getItems()) {
+            if (oi.getProduct() != null) previousByProduct.putIfAbsent(oi.getProduct().getId(), oi);
         }
+        java.util.Map<Long, Integer> requestedQty = new LinkedHashMap<>();
+        List<OrderRequest.OrderItemRequest> reqItems = newItems != null ? newItems : new ArrayList<>();
+        for (OrderRequest.OrderItemRequest itemReq : reqItems) {
+            if (itemReq.getProductId() == null || itemReq.getQuantity() == null || itemReq.getQuantity() <= 0) continue;
+            requestedQty.merge(itemReq.getProductId(), itemReq.getQuantity(), Integer::sum);
+        }
+        java.util.Map<Long, Integer> retailStock = "STOCK".equals(channel)
+                ? retailService.getStockByProduct() : java.util.Map.of();
+
+        // Gate NSO (antes de tocar nada): un perfume que ya no se puede importar se puede mantener o bajar, pero
+        // no subir ni agregar. Se juntan TODOS los bloqueados para avisar de una sola vez. Gate apagado: no-op.
+        if (nsoGate.isActive()) {
+            List<Product> raisedOrAdded = new ArrayList<>();
+            for (Map.Entry<Long, Integer> e : requestedQty.entrySet()) {
+                OrderItem previous = previousByProduct.get(e.getKey());
+                if (previous != null) {
+                    int oldQty = previous.getQuantity() != null ? previous.getQuantity() : 0;
+                    if (e.getValue() > oldQty) raisedOrAdded.add(previous.getProduct());
+                } else {
+                    productRepo.findById(e.getKey()).ifPresent(raisedOrAdded::add);
+                }
+            }
+            nsoGate.assertPurchasable(raisedOrAdded);
+        }
+
+        List<OrderItem> resultItems = new ArrayList<>();
+        List<OrderItem> addedItems = new ArrayList<>();
+        int newTotalUnits = 0;
+        for (Map.Entry<Long, Integer> e : requestedQty.entrySet()) {
+            Long productId = e.getKey();
+            int qty = e.getValue();
+            OrderItem previous = previousByProduct.get(productId);
+
+            if (previous != null) {
+                // Ya estaba: se reusa la misma linea (conserva precio, costo y picking).
+                int oldQty = previous.getQuantity() != null ? previous.getQuantity() : 0;
+                if ("STOCK".equals(channel) && qty > oldQty) {
+                    Integer stockQty = retailStock.get(productId);
+                    if (stockQty == null || stockQty < qty) {
+                        Product p = previous.getProduct();
+                        throw new IllegalArgumentException("No hay stock suficiente de " + p.getBrand() + " " + p.getName() + ".");
+                    }
+                }
+                previous.setQuantity(qty);
+                if (previous.getUnitPricePen() == null) {
+                    // Linea antigua sin precio guardado: se toma el del backend.
+                    previous.setUnitPricePen(backendUnitPrice(previous.getProduct(), channel, qty, retailStock));
+                    snapshotCost(previous, previous.getProduct());
+                }
+                previous.calculateSubtotal();
+                resultItems.add(previous);
+            } else {
+                Product product = productRepo.findById(productId)
+                        .orElseThrow(() -> new RuntimeException("Product not found: " + productId));
+                OrderItem item = new OrderItem();
+                item.setOrder(order);
+                item.setProduct(product);
+                item.setQuantity(qty);
+                item.setUnitPricePen(backendUnitPrice(product, channel, qty, retailStock));
+                snapshotCost(item, product);
+                item.calculateSubtotal();
+                resultItems.add(item);
+                addedItems.add(item);
+            }
+            newTotalUnits += qty;
+        }
+
+        // Quitar las lineas que ya no vienen (orphanRemoval=true las borra de la BD) y agregar las nuevas.
+        java.util.Set<OrderItem> keep = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        keep.addAll(resultItems);
+        order.getItems().removeIf(oi -> !keep.contains(oi));
+        order.getItems().addAll(addedItems);
 
         order.recalculateTotal();
 
@@ -661,6 +743,26 @@ public class ConsolidadoService {
         Order saved = orderRepo.save(order);
         recalculateConsolidado(order.getConsolidado().getId());
         return saved;
+    }
+
+    /**
+     * Precio unitario que cobra el BACKEND por canal (unica regla para crear y editar pedidos):
+     * STOCK = stockPricePen, exige precio de stock y unidades suficientes en tienda;
+     * CONSOLIDADO = wholesalePricePen (0 si no tiene).
+     */
+    private double backendUnitPrice(Product product, String channel, int quantity,
+                                    java.util.Map<Long, Integer> retailStock) {
+        if ("STOCK".equals(channel)) {
+            if (product.getStockPricePen() == null) {
+                throw new IllegalArgumentException(product.getBrand() + " " + product.getName() + " no está disponible en stock.");
+            }
+            Integer stockQty = retailStock.get(product.getId());
+            if (stockQty == null || stockQty < quantity) {
+                throw new IllegalArgumentException("No hay stock suficiente de " + product.getBrand() + " " + product.getName() + ".");
+            }
+            return product.getStockPricePen();
+        }
+        return product.getWholesalePricePen() != null ? product.getWholesalePricePen() : 0;
     }
 
     /** Congela costo y peso del producto en el item (misma base que definio su precio). */
@@ -749,9 +851,9 @@ public class ConsolidadoService {
         order.setClientPhone("ADMIN");
         order.setPaymentStatus("VERIFICADO");
 
+        java.util.Map<Long, Product> products = stockPurchaseProducts(request);
         for (StockPurchaseRequest.StockItem itemReq : request.getItems()) {
-            Product product = productRepo.findById(itemReq.getProductId())
-                    .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
+            Product product = products.get(itemReq.getProductId());
 
             OrderItem item = new OrderItem();
             item.setOrder(order);
@@ -782,9 +884,9 @@ public class ConsolidadoService {
 
     public BreakdownSection previewStockPurchase(StockPurchaseRequest request) {
         List<OrderItem> items = new ArrayList<>();
+        java.util.Map<Long, Product> products = stockPurchaseProducts(request);
         for (StockPurchaseRequest.StockItem itemReq : request.getItems()) {
-            Product product = productRepo.findById(itemReq.getProductId())
-                    .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
+            Product product = products.get(itemReq.getProductId());
             OrderItem item = new OrderItem();
             item.setProduct(product);
             item.setQuantity(itemReq.getQuantity());
@@ -796,6 +898,21 @@ public class ConsolidadoService {
             items.add(item);
         }
         return buildBreakdown(items, false);
+    }
+
+    /**
+     * Productos de una compra de tienda (mismo error de siempre si alguno no existe) + gate NSO: con el gate activo
+     * no se vuelve a comprar un perfume sin NSO; NsoBlockedException lista TODOS los bloqueados juntos.
+     */
+    private java.util.Map<Long, Product> stockPurchaseProducts(StockPurchaseRequest request) {
+        java.util.Map<Long, Product> products = new LinkedHashMap<>();
+        for (StockPurchaseRequest.StockItem itemReq : request.getItems()) {
+            Product product = productRepo.findById(itemReq.getProductId())
+                    .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
+            products.putIfAbsent(product.getId(), product);
+        }
+        nsoGate.assertPurchasable(products.values());
+        return products;
     }
 
     // --- Full Breakdown (3 sections) ---

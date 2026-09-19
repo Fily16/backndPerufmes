@@ -4,6 +4,7 @@ import org.example.backendbvaberiaperfumes.model.Product;
 import org.example.backendbvaberiaperfumes.repository.OrderItemRepository;
 import org.example.backendbvaberiaperfumes.repository.ProductRepository;
 import org.example.backendbvaberiaperfumes.repository.SupplierOfferRepository;
+import org.example.backendbvaberiaperfumes.service.nso.NsoGate;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -22,13 +23,16 @@ public class RecommendationService {
     private final ProductRepository productRepo;
     private final OrderItemRepository orderItemRepo;
     private final SupplierOfferRepository offerRepo;
+    private final NsoGate nsoGate;
 
     public RecommendationService(ProductRepository productRepo,
                                  OrderItemRepository orderItemRepo,
-                                 SupplierOfferRepository offerRepo) {
+                                 SupplierOfferRepository offerRepo,
+                                 NsoGate nsoGate) {
         this.productRepo = productRepo;
         this.orderItemRepo = orderItemRepo;
         this.offerRepo = offerRepo;
+        this.nsoGate = nsoGate;
     }
 
     /** Similares + frecuentemente pedidos juntos para un producto. */
@@ -52,10 +56,13 @@ public class RecommendationService {
         Set<Long> baseIds = bases.stream().map(Product::getId).collect(Collectors.toSet());
         Set<Long> inStock = new HashSet<>(offerRepo.findInStockProductIds());
 
+        // Gate NSO: se filtra el POOL (no el resultado) para que el relleno complete el limite con perfumes visibles.
+        // Gate apagado: isPublic equivale al filtro de disponibles de siempre.
         List<Product> candidates = productRepo.findByArchivedFalse().stream()
                 .filter(p -> !baseIds.contains(p.getId()))
                 .filter(p -> !Boolean.FALSE.equals(p.getAvailable()))
                 .filter(p -> p.getImageUrl() != null && !p.getImageUrl().isBlank())
+                .filter(nsoGate::isPublic)
                 .collect(Collectors.toList());
         Map<Long, Product> byId = candidates.stream()
                 .collect(Collectors.toMap(Product::getId, p -> p, (a, b) -> a));

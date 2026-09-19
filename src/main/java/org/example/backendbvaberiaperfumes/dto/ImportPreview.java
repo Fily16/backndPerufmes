@@ -27,6 +27,14 @@ public class ImportPreview {
     public int suspiciousRows;     // filas con costo fuera del rango plausible (typo probable)
     public boolean layoutFallback; // el parser afinado no reconocio el layout; se uso el generico
 
+    // --- NSO (solo lectura): veredicto por fila contra la lista NSO cargada ---
+    public boolean nsoCatalogLoaded;   // hay lista NSO con codigos activos (si no, todo nso* va en null/0)
+    public boolean nsoGateEnabled;     // filtro NSO efectivo HOY (flag encendido y lista cargada)
+    public int nsoConNso;
+    public int nsoReview;
+    public int nsoBrandOnly;
+    public int nsoNone;
+
     public List<Line> rows = new ArrayList<>();
 
     public static class Line {
@@ -55,5 +63,13 @@ public class ImportPreview {
         public Double matchScore;       // similitud del mejor candidato (si aplica)
         public String gtinStatus;       // OK | EMPTY | INVALID_LENGTH | CHECKSUM_FAIL | AMBIGUOUS
         public boolean suspicious;      // costo fuera del rango plausible: no repreciara salvo aprobacion
+
+        // NSO (null sin lista cargada)
+        public String nsoStatus;        // CON_NSO | EN_REVISION | MARCA_CON_NSO | SIN_NSO
+        public String nsoCode;          // codigo elegido (o el mejor candidato si va a revision)
+        public String nsoDeclaredName;  // nombre declarado en aduanas del codigo
+        public String nsoTitular;       // titular del codigo (o de la marca si solo la marca tiene NSO)
+        public String nsoReason;        // primer motivo legible
+        public String nsoCountry;       // PE | CO | BO | EC
     }
 }
