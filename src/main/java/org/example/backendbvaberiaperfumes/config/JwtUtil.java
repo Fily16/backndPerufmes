@@ -60,6 +60,56 @@ public class JwtUtil {
                 .compact();
     }
 
+    /**
+     * Token largo para un agente (el MCP local de Claude): mismo poder que la admin, pero marcado con
+     * el claim "agent" y revocable en bloque desde el panel (ver AgentTokenService: todos los emitidos
+     * antes de la fecha de revocacion dejan de valer).
+     */
+    public String generateAgentToken(String email, int days, long generation) {
+        long now = System.currentTimeMillis();
+        return Jwts.builder()
+                .subject(email)
+                .claim("agent", true)
+                .claim("gen", generation)
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + days * 24L * 60 * 60 * 1000))
+                .signWith(key)
+                .compact();
+    }
+
+    /** Generacion del token de agente (-1 si no es de agente o no se puede leer). */
+    public long getAgentGeneration(String token) {
+        try {
+            Number n = getClaims(token).get("gen", Number.class);
+            return n == null ? 0 : n.longValue();
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** true si el token es de agente (MCP), no una sesion normal del panel. */
+    public boolean isAgentToken(String token) {
+        try {
+            return Boolean.TRUE.equals(getClaims(token).get("agent", Boolean.class));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Momento de emision en milisegundos, o 0 si no se puede leer. */
+    public long getIssuedAtMs(String token) {
+        try {
+            Date d = getClaims(token).getIssuedAt();
+            return d == null ? 0 : d.getTime();
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    public Date getExpiration(String token) {
+        return getClaims(token).getExpiration();
+    }
+
     public String getEmailFromToken(String token) {
         return getClaims(token).getSubject();
     }

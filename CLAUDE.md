@@ -189,6 +189,11 @@ volver a correrla. El seed de productos/proveedores solo actua si no existen dat
   `Consolidado.orders` es `@JsonIgnore`; las promos publicas salen sin `profitPen` (solo `/api/admin/promotions`).
 - Al arrancar contra una BD que no es H2, `DefaultSecretsWarning` deja un WARN `[SEGURIDAD]` si `JWT_SECRET` es el de
   ejemplo o las cuentas admin/socio siguen con su clave de ejemplo (solo avisa: nunca impide arrancar).
+- **Tokens de agente** (`/api/admin/agent-tokens`, `AgentTokenService`): el MCP local de Claude entra al panel con un
+  token de 1 anio (claim `agent` + `gen`) que emite la pantalla de login tras un login normal (`?agent=<callback
+  127.0.0.1>&state=`), en vez de guardar la clave de la duena. "Desconectar Claude" (Ajustes) sube `gen` en
+  `app_config` y `JwtFilter` rechaza los anteriores; la revocacion NO se compara por fecha porque el `iat` del JWT
+  solo tiene precision de segundos. El callback solo puede ser localhost/127.0.0.1 (`isLocalCallback` en el front).
 - Autenticado (JWT): **todo el resto de `/api/consolidados/**`** (trae ganancias y datos de clientes),
   `/api/admin/**`, cualquier PUT/DELETE bajo `/api/**`, `POST /api/products/**`, `GET /api/orders` y
   `/api/orders/{id}`, `/api/retail/inventory|sales` (cualquier metodo). Sin token responde 403 (no 401).

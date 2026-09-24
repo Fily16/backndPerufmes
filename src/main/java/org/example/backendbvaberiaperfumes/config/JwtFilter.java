@@ -17,9 +17,14 @@ import java.util.List;
 public class JwtFilter extends OncePerRequestFilter {
 
     private final JwtUtil jwtUtil;
+    private final org.springframework.beans.factory.ObjectProvider<
+            org.example.backendbvaberiaperfumes.service.AgentTokenService> agentTokens;
 
-    public JwtFilter(JwtUtil jwtUtil) {
+    public JwtFilter(JwtUtil jwtUtil,
+                     org.springframework.beans.factory.ObjectProvider<
+                             org.example.backendbvaberiaperfumes.service.AgentTokenService> agentTokens) {
         this.jwtUtil = jwtUtil;
+        this.agentTokens = agentTokens; // perezoso: el filtro se crea antes que los servicios
     }
 
     @Override
@@ -29,7 +34,10 @@ public class JwtFilter extends OncePerRequestFilter {
 
         if (header != null && header.startsWith("Bearer ")) {
             String token = header.substring(7);
-            if (jwtUtil.validateToken(token)) {
+            // Token de agente (MCP) revocado desde "Desconectar Claude": se ignora aunque siga vigente.
+            var svc = agentTokens.getIfAvailable();
+            boolean revoked = svc != null && svc.isRevoked(token);
+            if (!revoked && jwtUtil.validateToken(token)) {
                 String email = jwtUtil.getEmailFromToken(token);
                 var auth = new UsernamePasswordAuthenticationToken(
                         email, null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN")));
